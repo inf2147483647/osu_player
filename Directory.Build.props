@@ -1,0 +1,20 @@
+<!-- Contains required properties for osu!framework projects. -->
+<Project>
+  <PropertyGroup Label="osu!framework">
+    <!-- Local checkout of osu!framework used for ProjectReference (may live on a different drive, so an absolute path is required). -->
+    <OsuFrameworkRoot>D:\temp\osu-framework-master</OsuFrameworkRoot>
+  </PropertyGroup>
+  <PropertyGroup Label="C#">
+    <LangVersion>14.0</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <PropertyGroup Label="Documentation">
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+  </PropertyGroup>
+  <PropertyGroup>
+    <ApplicationManifest>$(MSBuildThisFileDirectory)app.manifest</ApplicationManifest>
+  </PropertyGroup>
+</Project>

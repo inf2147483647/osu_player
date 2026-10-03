@@ -1,0 +1,30 @@
+## Build results
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+*.suo
+*.userprefs
+*.DotSettings.user
+
+## NuGet
+*.nupkg
+packages/
+!packages/build/
+
+## osu!framework / osu! runtime data
+# Local test / runtime storage created by GameHost next to the executable.
+osuplayer/
+visual-tests/
+*.realm
+
+## Rider / Visual Studio
+.idea/
+.vs/
+*.sln.iml
+
+## OS
+Thumbs.db
+desktop.ini
+.DS_Store

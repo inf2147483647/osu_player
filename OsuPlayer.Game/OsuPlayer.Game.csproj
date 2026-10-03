@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup Label="Project References">
+    <ProjectReference Include="..\OsuPlayer.Resources\OsuPlayer.Resources.csproj" />
+  </ItemGroup>
+  <ItemGroup Label="Package References">
+    <!-- Same architecture as the FemboyTest osu!-design reference: real osu! controls, fonts
+         (Torus/Noto/Venera), UI samples and cursor come from the shipped osu! packages
+         instead of being redrawn on top of the framework. -->
+    <PackageReference Include="ppy.osu.Game" Version="2026.916.0" />
+    <PackageReference Include="ppy.osu.Framework" Version="2026.921.0" />
+    <!-- Ships the pre-baked Noto glyph atlases (CJK/kana/Hangul/Thai) that osu!framework requires.
+         osu!framework cannot rasterise TTF/OTF at runtime, so fonts must come pre-baked. -->
+    <PackageReference Include="ppy.osu.Game.Resources" Version="2026.921.0" />
+    <!-- KuGou API JSON parsing; version pinned to match the osu!framework dependency closure. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
+  </ItemGroup>
+</Project>
