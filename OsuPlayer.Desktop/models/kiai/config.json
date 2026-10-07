@@ -1,0 +1,22 @@
+{
+  "window_radius": 14,
+  "window_size": 29,
+  "raw_dim": 40,
+  "threshold": 0.55,
+  "min_cells": 10,
+  "merge_gap_cells": 6,
+  "padding_cells": 2,
+  "snap_boundaries": false,
+  "model": "logreg",
+  "oof_metrics": {
+    "iou": 0.2522172881214871,
+    "count_match": 0.2152317880794702,
+    "zero_truth_false_alarm": 0.9743589743589743,
+    "zero_truth_songs": 78,
+    "frame": {
+      "ap": 0.4644929953454462,
+      "auc": 0.8173542182691816,
+      "f1@0.5": 0.5539294754812504
+    }
+  }
+}

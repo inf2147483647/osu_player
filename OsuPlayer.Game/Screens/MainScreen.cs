@@ -53,6 +53,13 @@ namespace OsuPlayer.Game.Screens
         [Cached]
         private readonly CopyContextMenu copyMenu = new CopyContextMenu();
 
+        /// <summary>
+        /// 底栏「音质 / 倍数」的下拉浮层。缓存在这里，底栏按 <see cref="PlaybackOptionsPopup"/> 解析它，
+        /// 弹出的卡片因此位于内容树最上层（底栏自己那条控制带之外也能收到点击）。
+        /// </summary>
+        [Cached]
+        private readonly PlaybackOptionsPopup playbackOptions = new PlaybackOptionsPopup();
+
         [BackgroundDependencyLoader]
         private void load()
         {
@@ -137,7 +144,8 @@ namespace OsuPlayer.Game.Screens
                 new TopBar { OnNavigate = showPanel },
                 sidePanel = new SidePanel(),
                 timingEditor = new TimingEditorPanel(),
-                // 复制菜单在最上层；关闭时它完全不参与输入，不影响下面的交互。
+                // 播放选项浮层在复制菜单之下：两者关闭时都不参与输入，打开时后者最上层。
+                playbackOptions,
                 copyMenu,
             };
         }
@@ -181,9 +189,19 @@ namespace OsuPlayer.Game.Screens
         {
             var provider = (MusicBeatSyncProvider)beatSync;
 
-            if (player.CurrentSong.Value is null || provider.CurrentTiming is not { Lines.Count: > 0 } timing)
+            if (player.CurrentSong.Value is not { } song || provider.CurrentTiming is not { Lines.Count: > 0 } timing)
             {
                 AppLog.Ui.Add("暂无 timing 可编辑（未在播放或还没有节拍信息）");
+                return;
+            }
+
+            // 切歌后 CurrentSong 先更新，而 provider 清空 CurrentTiming 要等到下一帧 beginAnalysis()，
+            // 这段窗口里 CurrentTiming 仍属于上一首。不校验归属就会把上一首的 BPM/首拍/kiai
+            // 当成新歌的数据展示，并且因为 openedForHash 取的是新歌 hash，编辑还会写回新歌。
+            if (provider.TimingOwnerHash != song.Hash)
+            {
+                AppLog.Ui.Add($"时间轴不属于当前曲目（owner={provider.TimingOwnerHash ?? "-"}，"
+                              + $"当前={song.Hash}），等新曲分析完成后再打开");
                 return;
             }
 

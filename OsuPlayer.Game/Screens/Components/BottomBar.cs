@@ -23,6 +23,10 @@ namespace OsuPlayer.Game.Screens.Components
         [Resolved]
         private MusicPlayer player { get; set; } = null!;
 
+        /// <summary>「音质 / 倍数」的下拉浮层，由 <see cref="Screens.MainScreen"/> 缓存。</summary>
+        [Resolved]
+        private PlaybackOptionsPopup optionsPopup { get; set; } = null!;
+
         public Action<PanelKind>? OnNavigate;
 
         private UiTextButton repeatButton = null!;
@@ -35,6 +39,9 @@ namespace OsuPlayer.Game.Screens.Components
         private SpriteText lengthTimeText = null!;
         private SeekSliderBar progress = null!;
         private CommittingRoundedSliderBar<float> volumeSlider = null!;
+
+        /// <summary>进度条的取值范围（只由进度条写入，避免与播放循环抢同一个 bindable）。</summary>
+        private readonly BindableNumber<double> seekRange = new BindableNumber<double>(0);
 
         [BackgroundDependencyLoader]
         private void load()
@@ -55,10 +62,10 @@ namespace OsuPlayer.Game.Screens.Components
                     Children = new[]
                     {
                         new UiTextButton("在线搜索歌词", () => OnNavigate?.Invoke(PanelKind.LyricsSearch), 22),
-                        likeButton = new UiTextButton("喜欢", () => player.ToggleLike(), 22),
+                        likeButton = new UiTextButton("喜欢", () => _ = player.ToggleLikeAsync(), 22),
                         new UiTextButton("评论", () => OnNavigate?.Invoke(PanelKind.Comments), 22),
-                        tempoButton = new UiTextButton("倍数 1.0", () => player.CycleTempo(), 22),
-                        qualityButton = new UiTextButton("音质 标准", () => _ = player.CycleQualityAsync(), 22),
+                        tempoButton = new UiTextButton("倍数 1.00", showTempoOptions, 22),
+                        qualityButton = new UiTextButton("音质 标准", showQualityOptions, 22),
                         new UiTextButton("播放队列", () => OnNavigate?.Invoke(PanelKind.Queue), 22),
                     },
                 },
@@ -109,16 +116,29 @@ namespace OsuPlayer.Game.Screens.Components
                     Origin = Anchor.CentreLeft,
                     Position = new Vector2(296, -24),
                     Width = 648,
+                    OnScrub = ms => player.Scrub(ms),
                     OnSeek = ms => player.Seek(ms),
                 },
                 lengthTimeText = makeTimeText(Anchor.BottomLeft, new Vector2(972, -24)),
             };
 
-            // Configure bounds on the player bindables themselves: assigning a two-way bound
-            // copy would otherwise reset the user-defined min/max the SliderBar requires.
+            // 进度条需要一个 BindableNumber 来定义取值范围，但**不能**直接绑 CurrentTimeMs：
+            // 播放循环每帧都会写回播放位置，双向绑定下会和正在拖动的用户抢同一个 bindable，
+            // 拖动就会来回跳（卡顿）。这里给它一个只由滑块自己写入的范围 bindable，
+            // 播放进度改由 SeekSliderBar.Update 单向拉取。
             player.CurrentTimeMs.MinValue = 0;
-            player.LengthMs.BindValueChanged(e => player.CurrentTimeMs.MaxValue = Math.Max(1, e.NewValue), true);
-            progress.Current = player.CurrentTimeMs;
+            seekRange.MinValue = 0;
+            seekRange.MaxValue = 1;
+
+            player.LengthMs.BindValueChanged(e =>
+            {
+                double max = Math.Max(1, e.NewValue);
+                player.CurrentTimeMs.MaxValue = max;
+                seekRange.MaxValue = max;
+            }, true);
+
+            progress.Current = seekRange;
+            progress.Source = player.CurrentTimeMs;
 
             player.Volume.MinValue = 0;
             player.Volume.MaxValue = 1;
@@ -174,25 +194,28 @@ namespace OsuPlayer.Game.Screens.Components
                 _ => "不循环",
             };
 
-        private void updateTempoLabel()
-        {
-            double t = player.Tempo.Value;
-            tempoButton.Text = $"倍数 {(Math.Abs(t - 1) < 0.01 ? "1.0" : t.ToString("0.##"))}";
-        }
+        private void updateTempoLabel() => tempoButton.Text = $"倍数 {player.Tempo.Value:0.00}";
 
-        private void updateQualityLabel()
+        private void updateQualityLabel() => qualityButton.Text = $"音质 {qualityLabel(player.Quality.Value)}";
+
+        /// <summary>音质的界面文案（下拉框里的选项与底栏按钮共用一套）。</summary>
+        private static string qualityLabel(string quality)
         {
-            string label = player.Quality.Value switch
+            foreach ((string value, string label) in MusicPlayer.QualityOptions)
             {
-                "128" => "标准",
-                "320" => "高品",
-                "flac" => "无损",
-                "high" => "母带",
-                _ => player.Quality.Value,
-            };
+                if (value == quality)
+                    return label;
+            }
 
-            qualityButton.Text = $"音质 {label}";
+            return quality;
         }
+
+        /// <summary>下拉卡片以按钮左上角为锚点弹出。</summary>
+        private void showTempoOptions() => optionsPopup.ShowTempo(buttonAnchor(tempoButton));
+
+        private void showQualityOptions() => optionsPopup.ShowQuality(buttonAnchor(qualityButton));
+
+        private static Vector2 buttonAnchor(Drawable button) => button.ScreenSpaceDrawQuad.TopLeft;
 
         private void updateLikeState()
         {

@@ -7,6 +7,7 @@ using osu.Framework.Threading;
 using osu.Game.Graphics;
 using osuTK;
 using osuTK.Graphics;
+using OsuPlayer.Game.Logging;
 using OsuPlayer.Game.Music;
 
 namespace OsuPlayer.Game.Screens.Components
@@ -24,6 +25,7 @@ namespace OsuPlayer.Game.Screens.Components
         public Action<PanelKind>? OnNavigate;
 
         private UiTextButton accountButton = null!;
+        private UiTextButton notificationButton = null!;
         private SpriteText clockText = null!;
         private ScheduledDelegate? clockDelegate;
 
@@ -83,7 +85,7 @@ namespace OsuPlayer.Game.Screens.Components
                         new UiTextButton("正在播放", () => OnNavigate?.Invoke(PanelKind.Queue), 22),
                         accountButton = new UiTextButton("账号", () => OnNavigate?.Invoke(PanelKind.Account), 22),
                         CreateClock(),
-                        new UiTextButton("通知", () => OnNavigate?.Invoke(PanelKind.Notifications), 22),
+                        notificationButton = new UiTextButton("通知", () => OnNavigate?.Invoke(PanelKind.Notifications), 22),
                     },
                 },
             };
@@ -114,6 +116,19 @@ namespace OsuPlayer.Game.Screens.Components
 
             clockDelegate = Scheduler.AddDelayed(updateClock, 0, true);
             updateClock();
+
+            NotificationCenter.Changed += onNotificationsChanged;
+            onNotificationsChanged();
+        }
+
+        private void onNotificationsChanged()
+        {
+            // 通知可能来自任意线程，回更新线程再改 Drawable。
+            Schedule(() =>
+            {
+                int unread = NotificationCenter.UnreadCount;
+                notificationButton.Text = unread > 0 ? $"通知 {unread}" : "通知";
+            });
         }
 
         private void updateClock()
@@ -125,6 +140,7 @@ namespace OsuPlayer.Game.Screens.Components
         protected override void Dispose(bool isDisposing)
         {
             clockDelegate?.Cancel();
+            NotificationCenter.Changed -= onNotificationsChanged;
             base.Dispose(isDisposing);
         }
     }

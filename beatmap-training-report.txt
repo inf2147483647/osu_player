@@ -1,40 +1,315 @@
 # 自动 BPM / kiai 训练报告
 # 谱面目录：c:\Users\Administrator\RiderProjects\osu_player\beatmap
-# 谱面数量：29
+# BPM 检测模式：原生
+# 谱面数量：302
 
-1849048 FREEDOM CREATORS - Okurina -Inochi o Aoku Mimamori Nemurina-	BPM 266 → 103（误差 163）	首拍误差 48ms	kiai 10 → 3（IoU 0.18）
-1890443 44teru-k - En ~ Shoujo no Yume, Kyomu no Sekai ~	BPM 156 → 123（误差 33）	首拍误差 178ms	kiai 6 → 3（IoU 0.04）
-2044424 solfa feat. iyuna - Emukko Kyun Kyun	BPM 160 → 161（误差 1）	首拍误差 34ms	kiai 3 → 4（IoU 0.40）
-2085566 seatrus - HydroMe+eor	BPM 161 → 161（误差 0）	首拍误差 24ms	kiai 2 → 2（IoU 0.21）
-2186061 Suzuki Konomi - Realize	BPM 206 → 155（误差 51）	首拍误差 69ms	kiai 5 → 4（IoU 0.29）
-2298007 AAAA - Lobelia (Short Ver.)	BPM 198 → 198（误差 0）	首拍误差 19ms	kiai 1 → 3（IoU 0.24）
-2407680 lexycat - Hanabi	BPM 140.97 → 142（误差 1.03）	首拍误差 52ms	kiai 1 → 2（IoU 0.29）
-2418426 KINEMA106 - Zankyou no Requiem	BPM 236 → 134（误差 102）	首拍误差 2ms	kiai 7 → 12（IoU 0.07）
-2438183 Dimrain47 - Every End...	BPM 150 → 151（误差 1）	首拍误差 33ms	kiai 8 → 4（IoU 0.35）
-2483633 CQ - Primal	BPM 188.02 → 126（误差 62.02，八度错）	首拍误差 159ms	kiai 1 → 4（IoU 0.30）
-2505136 Aiobahn - resonance feat. KOCHO (KARUT Remix)	BPM 150 → 151（误差 1）	首拍误差 38ms	kiai 3 → 4（IoU 0.28）
-2531128 ELFENSJoN - Houmuru Kagerou	BPM 64.33 → 191（误差 126.67）	首拍误差 2ms	kiai 3 → 2（IoU 0.44）
-2551269 Annalisa - Esibizionista (Nightcore Mix)	BPM 157.5 → 195（误差 37.5）	首拍误差 98ms	kiai 3 → 2（IoU 0.28）
-2559813 Laur - SEV-26	BPM 220 → 112（误差 108）	首拍误差 125ms	kiai 6 → 6（IoU 0.20）
-2572357 Sewerslvt - Newlove	BPM 130 → 178（误差 48）	首拍误差 192ms	kiai 0 → 1（IoU 0.00）
-2583965 Plum - R	BPM 180 → 118（误差 62）	首拍误差 56ms	kiai 1 → 3（IoU 0.23）
-2584787 Kitazawa Kyouhei feat. flower - CANNIBALISM	BPM 182 → 119（误差 63）	首拍误差 136ms	kiai 3 → 3（IoU 0.31）
-2591122 -45 - Yomitsu Hirasaka CORRUPTION	BPM 135 → 135（误差 0）	首拍误差 216ms	kiai 0 → 4（IoU 0.00）
-2592931 San-Z - Evil and Instinct	BPM 270 → 140（误差 130）	首拍误差 0ms	kiai 13 → 1（IoU 0.02）
-2602367 solfa feat. Tsukiyono Usagi (CV_ Moca Choco) - Marshmallow Whip (Game Ver.)	BPM 145 → 144（误差 1）	首拍误差 1ms	kiai 1 → 3（IoU 0.25）
-2602772 MuryokuP - Mephisto	BPM 190 → 94（误差 96，八度错）	首拍误差 33ms	kiai 4 → 4（IoU 0.39）
-2605983 Cranky - Luvin' You	BPM 110 → 161（误差 51）	首拍误差 7ms	kiai 8 → 2（IoU 0.31）
-2609591 DJ Raisei - Catharticus ~ Herald angels sing	BPM 281 → 140（误差 141，八度错）	首拍误差 53ms	kiai 13 → 6（IoU 0.34）
-2609752 Camellia & DJ Genki - Feelin Sky	BPM 174 → 172（误差 2）	首拍误差 5ms	kiai 3 → 5（IoU 0.39）
-2611765 seatrus - Abendstern	BPM 247 → 161（误差 86）	首拍误差 102ms	kiai 5 → 4（IoU 0.32）
-2611984 solfa feat. Ceui - Natsuiro Yakimochi Koi Moyou	BPM 193 → 190（误差 3）	首拍误差 17ms	kiai 3 → 5（IoU 0.33）
-2615942 Harumaki Gohan feat. Hatsune Miku - Yakusoku	BPM 136 → 134（误差 2）	首拍误差 164ms	kiai 5 → 4（IoU 0.42）
-2618825 Shoji Meguro feat. Azumi Takahashi - Want To Be Close -Reload- (Cut Ver.)	BPM 121 → 122（误差 1）	首拍误差 13ms	kiai 0 → 2（IoU 0.00）
-783856 KASAI HARCORES - CYCLE HIT	BPM 175 → 177（误差 2）	首拍误差 65ms	kiai 10 → 5（IoU 0.20）
+1047494 Xilent - Free Me (feat. Charlotte Haining) (Smooth Remix) (Cut Ver.)	BPM 174 → 172（误差 2）	首拍误差 31ms	小节偏差 376ms	kiai 4 → 1（IoU 0.50）
+1069048 Kurokotei - Chronostasis	BPM 196 → 148（误差 48）	首拍误差 62ms	小节偏差 244ms	kiai 3 → 2（IoU 0.44）
+1158984 Lena Raine - Postcard from Celeste Mountain	BPM 88.3 → 192（误差 103.7）	首拍误差 83ms	小节偏差 1276ms	kiai 0 → 2（IoU 0.00）
+1225788 Tokoyami Towa - -ERROR	BPM 200 → 134（误差 66，八度错）	首拍误差 53ms	小节偏差 53ms	kiai 3 → 3（IoU 0.49）
+1309827 Numakura Manami - Sakebe	BPM 197 → 194（误差 3）	首拍误差 39ms	小节偏差 265ms	kiai 9 → 5（IoU 0.37）
+1370519 Ceui - Hoshi Ori Yume Mirai	BPM 174 → 172（误差 2）	首拍误差 2ms	小节偏差 2ms	kiai 7 → 3（IoU 0.37）
+1374171 Kusunoki Arisu (CV_ Horinaka Yuki) - Owaranai Marionette	BPM 200 → 199（误差 1）	首拍误差 59ms	小节偏差 541ms	kiai 17 → 4（IoU 0.47）
+1697681 uma vs. Morimori Atsushi - Re_ End of a Dream (Long Ver.)	BPM 212 → 139（误差 73）	首拍误差 127ms	小节偏差 156ms	kiai 8 → 6（IoU 0.17）
+171215 Uchida Maaya - Soushou Innocence	BPM 205 → 148（误差 57）	首拍误差 103ms	小节偏差 396ms	kiai 0 → 1（IoU 0.00）
+1755122 Duca & AiRI - Full Throttle Heart	BPM 174 → 167（误差 7）	首拍误差 132ms	小节偏差 213ms	kiai 5 → 5（IoU 0.39）
+1798165 SHIKI - AIR (EZ2ON Ver.)	BPM 178 → 185（误差 7）	首拍误差 18ms	小节偏差 356ms	kiai 2 → 3（IoU 0.25）
+1809139 Hana (Usa) & X-Plorez - Summer time music	BPM 165 → 137（误差 28）	首拍误差 33ms	小节偏差 694ms	kiai 3 → 3（IoU 0.47）
+1924178 Sobrem - slic.hertz	BPM 145 → 144（误差 1）	首拍误差 20ms	小节偏差 20ms	kiai 2 → 2（IoU 0.29）
+1928809 HOYO-MiX - Thanks for Your Patronage!	BPM 167 → 165（误差 2）	首拍误差 7ms	小节偏差 352ms	kiai 2 → 1（IoU 0.29）
+1948604 supercell - My Dearest	BPM 168 → 169（误差 1）	首拍误差 173ms	小节偏差 184ms	kiai 5 → 4（IoU 0.33）
+1973146 paraoka - kyrie	BPM 140 → 142（误差 2）	首拍误差 9ms	小节偏差 420ms	kiai 3 → 2（IoU 0.44）
+2005179 Takamachi Walk - Lamento - Memory	BPM 145 → 185（误差 40）	首拍误差 192ms	小节偏差 192ms	kiai 0 → 5（IoU 0.00）
+2008844 Demetori - Yuuga ni Sakase, Sumizome no Sakura ~ Re_The Harm of Coming into Existence	BPM 144 → 139（误差 5）	首拍误差 59ms	小节偏差 774ms	kiai 5 → 7（IoU 0.44）
+2024203 Maeda Jun x yanaginagi - Hifukiyama no Mahoutsukai	BPM 165 → 167（误差 2）	首拍误差 165ms	小节偏差 198ms	kiai 0 → 3（IoU 0.00）
+2024763 Porno Graffitti - Saudade	BPM 120.05 → 120（误差 0.05）	首拍误差 18ms	小节偏差 482ms	kiai 3 → 3（IoU 0.30）
+2032147 void - Sudden Romance (Game Ver.)	BPM 152 → 152（误差 0）	首拍误差 16ms	小节偏差 379ms	kiai 16 → 3（IoU 0.26）
+2032374 Unlucky Morpheus - Kamigami ga Koishita Gensoukyou	BPM 155 → 118（误差 37）	首拍误差 187ms	小节偏差 587ms	kiai 0 → 3（IoU 0.00）
+2044424	BPM 160 → 161（误差 1）	首拍误差 34ms	小节偏差 34ms	kiai 3 → 3（IoU 0.49）
+2075459 Hideous Divinity - Passages	BPM 244 → 140（误差 104）	首拍误差 96ms	小节偏差 341ms	kiai 14 → 6（IoU 0.25）
+2085566	BPM 161 → 161（误差 0）	首拍误差 23ms	小节偏差 349ms	kiai 2 → 2（IoU 0.25）
+2085900 Fist of Satan - Abandoned Land	BPM 240 → 161（误差 79）	首拍误差 40ms	小节偏差 460ms	kiai 0 → 3（IoU 0.00）
+2097811 bladee - shadowface (feat. Bones)	BPM 126 → 130（误差 4）	首拍误差 173ms	小节偏差 303ms	kiai 1 → 3（IoU 0.22）
+2119498 Arata Iiyoshi, Hideki Sakamoto, Keisuke Ito - Brine Cave	BPM 108 → 138（误差 30）	首拍误差 155ms	小节偏差 401ms	kiai 5 → 1（IoU 0.10）
+2128687 Yuragi - soon	BPM 151.96 → 170（误差 18.05）	首拍误差 100ms	小节偏差 690ms	kiai 2 → 1（IoU 0.18）
+2151886 Hasu no Sora Jogakuin School Idol Club - Dream Believers	BPM 162 → 161（误差 1）	首拍误差 9ms	小节偏差 380ms	kiai 32 → 5（IoU 0.39）
+2155535 KINEMA106 - Fumetsu no Gekijou	BPM 190 → 121（误差 69）	首拍误差 59ms	小节偏差 572ms	kiai 12 → 3（IoU 0.38）
+2163127 iroha(sasaki) - 14	BPM 128 → 167（误差 39）	首拍误差 222ms	小节偏差 716ms	kiai 0 → 3（IoU 0.00）
+2204883 SCL Project feat. VanaN'Ice - Haitoku no Kioku ~The Lost Memory~	BPM 230 → 112（误差 118）	首拍误差 20ms	小节偏差 20ms	kiai 5 → 3（IoU 0.20）
+2221870 Fujifabric - PLANETARIA	BPM 167 → 131（误差 36）	首拍误差 13ms	小节偏差 372ms	kiai 5 → 3（IoU 0.45）
+2234437 Anamanaguchi - Japan Air (feat. Meesh)	BPM 145.33 → 144（误差 1.33）	首拍误差 186ms	小节偏差 186ms	kiai 0 → 6（IoU 0.00）
+2234472 xi - White Peak	BPM 191 → 191（误差 0）	首拍误差 30ms	小节偏差 30ms	kiai 3 → 5（IoU 0.31）
+2238661 aespa - Supernova (Cut Ver.)	BPM 120 → 120（误差 0）	首拍误差 84ms	小节偏差 416ms	kiai 3 → 2（IoU 0.50）
+2239791 HOYO-MiX - Se mettre sur son trente-et-un !	BPM 220 → 110（误差 110，八度错）	首拍误差 129ms	小节偏差 143ms	kiai 5 → 2（IoU 0.26）
+2248928 Toaka - Cinder ella	BPM 144 → 144（误差 0）	首拍误差 41ms	小节偏差 457ms	kiai 3 → 2（IoU 0.45）
+2256886 callasoiled - propagate	BPM 170 → 119（误差 51）	首拍误差 52ms	小节偏差 52ms	kiai 2 → 2（IoU 0.23）
+2258953 Suzuki Konomi - Reweave (TV Size)	BPM 183 → 123（误差 60，八度错）	首拍误差 29ms	小节偏差 29ms	kiai 1 → 1（IoU 0.40）
+2271744 Tsukino - Dohna Dohna no Uta	BPM 152 → 152（误差 0）	首拍误差 162ms	小节偏差 557ms	kiai 3 → 5（IoU 0.40）
+2276996 Sato Noco - Kore wa Suteki na Mahou! _._^.__ (mimizu Remix)	BPM 180 → 133（误差 47）	首拍误差 4ms	小节偏差 4ms	kiai 8 → 3（IoU 0.28）
+2279964 LemKuuja - What's a Future Funk_	BPM 120 → 120（误差 0）	首拍误差 207ms	小节偏差 793ms	kiai 0 → 4（IoU 0.00）
+2281952 Zemfira - kto_	BPM 96 → 191（误差 95）	首拍误差 9ms	小节偏差 1241ms	kiai 0 → 2（IoU 0.00）
+2285625 Nstryder - Bloodlines (The Impaler Finale)	BPM 280 → 117（误差 163）	首拍误差 77ms	小节偏差 137ms	kiai 5 → 3（IoU 0.25）
+2289970 Camellia feat. Hatsune Miku - Seimeisei Syndrome	BPM 225 → 126（误差 99）	首拍误差 56ms	小节偏差 477ms	kiai 5 → 5（IoU 0.36）
+2298007	BPM 198 → 199（误差 1）	首拍误差 19ms	小节偏差 322ms	kiai 1 → 1（IoU 0.39）
+2299662 DJ Tinyhandz - doja cat @ 200bpm	BPM 200 → 131（误差 69）	首拍误差 38ms	小节偏差 38ms	kiai 3 → 4（IoU 0.28）
+2301831 respon feat. Hatsune Miku - 39-byou	BPM 158 → 157（误差 1）	首拍误差 7ms	小节偏差 752ms	kiai 1 → 1（IoU 0.48）
+2303013 Shimotsuki Haruka - Rengoku	BPM 172 → 170（误差 2）	首拍误差 116ms	小节偏差 116ms	kiai 3 → 3（IoU 0.44）
+2318586 Katy Perry - Hot N Cold	BPM 132 → 133（误差 1）	首拍误差 19ms	小节偏差 473ms	kiai 3 → 4（IoU 0.46）
+2325812 Goresoerd - Lein	BPM 213 → 112（误差 101）	首拍误差 66ms	小节偏差 216ms	kiai 3 → 4（IoU 0.23）
+2330826 Kendrick Lamar - Savior (feat. Baby Keem & Sam Dew)	BPM 95 → 118（误差 23）	首拍误差 175ms	小节偏差 175ms	kiai 15 → 4（IoU 0.17）
+2339629 xi - The End of Dreams	BPM 180 → 135（误差 45）	首拍误差 87ms	小节偏差 246ms	kiai 19 → 3（IoU 0.07）
+2340745 Synthtonix - Supernova	BPM 150 → 152（误差 2）	首拍误差 43ms	小节偏差 443ms	kiai 0 → 1（IoU 0.00）
+2342733 SYU (from GALNERYUS) - Mikansei no Tsubasa	BPM 184 → 178（误差 6）	首拍误差 143ms	小节偏差 469ms	kiai 6 → 5（IoU 0.37）
+2347519 katagiri - Breakcore Kakumei Zenya	BPM 240 → 120（误差 120，八度错）	首拍误差 105ms	小节偏差 395ms	kiai 3 → 2（IoU 0.00）
+2348600 Yuki Kira - HEAVENLY BLUE	BPM 178 → 149（误差 29）	首拍误差 26ms	小节偏差 363ms	kiai 3 → 2（IoU 0.35）
+2349777 J-CORE SLi__CER - _Ongaku producer_ no heikinteki na seishin joutai	BPM 106 → 125（误差 19）	首拍误差 92ms	小节偏差 1040ms	kiai 17 → 5（IoU 0.37）
+2359746 The Luna Sequence - Begin Where I End	BPM 180 → 181（误差 1）	首拍误差 24ms	小节偏差 357ms	kiai 3 → 5（IoU 0.28）
+2362678 SDMNE - Beyond The Aexis	BPM 240 → 119（误差 121）	首拍误差 93ms	小节偏差 343ms	kiai 3 → 7（IoU 0.25）
+2363354 Fujita Kotone (CV_ Iida Hikaru) - The Cute!!!	BPM 175 → 123（误差 52）	首拍误差 150ms	小节偏差 193ms	kiai 3 → 4（IoU 0.32）
+2372501 Yasushi Ida, Taiju Suzuki - Status Screen	BPM 135.11 → 181（误差 45.9）	首拍误差 68ms	小节偏差 820ms	kiai 0 → 1（IoU 0.00）
+2372732 School Food Punishment - You May Crawl	BPM 148 → 147（误差 1）	首拍误差 199ms	小节偏差 605ms	kiai 3 → 3（IoU 0.40）
+2379873 Teminite x Boom Kitty x Waterflame - Slash Inferno	BPM 158 → 157（误差 1）	首拍误差 42ms	小节偏差 338ms	kiai 15 → 4（IoU 0.45）
+2380556 Leah Kate - Alive and Unwell (Cut Ver.)	BPM 200 → 131（误差 69）	首拍误差 139ms	小节偏差 461ms	kiai 0 → 1（IoU 0.00）
+2384224 Yunomi - Jellyfish (feat. Roller Girl)	BPM 160 → 161（误差 1）	首拍误差 44ms	小节偏差 419ms	kiai 6 → 3（IoU 0.38）
+2387765 t+pazolite feat. Rizna - Distorted Lovesong (Full Ver.)	BPM 240 → 192（误差 48）	首拍误差 113ms	小节偏差 113ms	kiai 5 → 4（IoU 0.32）
+2400317 Aziya - bbydoll (nightcore & cut ver.)	BPM 217.1 → 137（误差 80.1）	首拍误差 18ms	小节偏差 294ms	kiai 1 → 1（IoU 0.34）
+2402845 Charlie Darker & Far Too Loud - Nail Gun	BPM 128 → 129（误差 1）	首拍误差 41ms	小节偏差 897ms	kiai 2 → 2（IoU 0.50）
+2405366 Satono Diamond (CV_ Tachibana Hina), Kitasan Black (CV_ Yano Hinaki) - Ambitious World	BPM 180 → 178（误差 2）	首拍误差 29ms	小节偏差 29ms	kiai 3 → 4（IoU 0.39）
+2412060 Various Artists - GIRLS' LEGEND U	BPM 205 → 199（误差 6）	首拍误差 47ms	小节偏差 246ms	kiai 4 → 5（IoU 0.36）
+2414068 S-C-U feat. Qrispy Joybox - anemone	BPM 200 → 150（误差 50）	首拍误差 92ms	小节偏差 392ms	kiai 1 → 3（IoU 0.18）
+2416422 Tic-Tekk-Toe - Hearts Without A Home (Cut Ver.)	BPM 180 → 178（误差 2）	首拍误差 53ms	小节偏差 280ms	kiai 3 → 2（IoU 0.37）
+2423862 mona (CV_ Natsukawa Shiina) - Fansa	BPM 152 → 178（误差 26）	首拍误差 147ms	小节偏差 642ms	kiai 3 → 4（IoU 0.40）
+2427420 Akari Hoshizaki (CV_ Akao Hikaru), Chinatsu Hinata (CV_ Okasaki Miho) - Sun(Mile)Flower (Game Ver.)	BPM 160 → 158（误差 2）	首拍误差 106ms	小节偏差 644ms	kiai 3 → 4（IoU 0.35）
+2428575 bungeitengoku - Seikatsu o Tomete	BPM 230 → 148（误差 82）	首拍误差 110ms	小节偏差 151ms	kiai 0 → 2（IoU 0.00）
+2438095 sokoninaru - Shinsekai Yori	BPM 220 → 180（误差 40）	首拍误差 109ms	小节偏差 435ms	kiai 5 → 3（IoU 0.45）
+2440933 Drab Majesty - Cold Souls	BPM 75 → 155（误差 80）	首拍误差 26ms	小节偏差 1574ms	kiai 0 → 2（IoU 0.00）
+2442155 Halv - Akashic Hex	BPM 200 → 131（误差 69）	首拍误差 149ms	小节偏差 149ms	kiai 5 → 5（IoU 0.37）
+2446952 jixwang - Ode to the Nameless Martyr	BPM 146 → 151（误差 5）	首拍误差 119ms	小节偏差 703ms	kiai 3 → 3（IoU 0.45）
+2448066 sokoninaru - soumonka (tv size)	BPM 200 → 132（误差 68）	首拍误差 71ms	小节偏差 529ms	kiai 1 → 3（IoU 0.28）
+2448093 PHAZE - abyss	BPM 220 → 152（误差 68）	首拍误差 44ms	小节偏差 502ms	kiai 3 → 3（IoU 0.41）
+2448628 Rita - Little Busters! (MUZIK SERVANT & LU-I remix)	BPM 170 → 172（误差 2）	首拍误差 77ms	小节偏差 430ms	kiai 6 → 5（IoU 0.31）
+2451252 Yoshino - Nie	BPM 123 → 123（误差 0）	首拍误差 50ms	小节偏差 50ms	kiai 10 → 3（IoU 0.32）
+2453743 Kairiki bear feat. Hatsune Miku - Yamiaka Steroid	BPM 203 → 185（误差 18）	首拍误差 93ms	小节偏差 388ms	kiai 0 → 3（IoU 0.00）
+2454315 Evan Fong - This One's For Me	BPM 196 → 148（误差 48）	首拍误差 125ms	小节偏差 125ms	kiai 0 → 2（IoU 0.00）
+2454878 Shizuka (CV_ Hasegawa Ikumi) - I Wanna	BPM 200 → 149（误差 51）	首拍误差 126ms	小节偏差 474ms	kiai 4 → 4（IoU 0.38）
+2458526 Katakiri Rekka - Tamayura (Game Ver.)	BPM 160 → 161（误差 1）	首拍误差 186ms	小节偏差 189ms	kiai 1 → 1（IoU 0.36）
+2459773 Wakabayashi - I NEED YOU!	BPM 194 → 191（误差 3）	首拍误差 14ms	小节偏差 323ms	kiai 3 → 2（IoU 0.46）
+2463184 GALNERYUS - ANGEL OF SALVATION	BPM 170.12 → 132（误差 38.12）	首拍误差 16ms	小节偏差 337ms	kiai 7 → 10（IoU 0.32）
+2465345 syudou - Cute na Kanojo	BPM 160 → 162（误差 2）	首拍误差 41ms	小节偏差 334ms	kiai 3 → 0（IoU 0.00）
+2475655 Lee Jin Ah - Target for Love (Ludicin's Hardcore Bootleg)	BPM 170 → 170（误差 0）	首拍误差 89ms	小节偏差 89ms	kiai 7 → 2（IoU 0.36）
+2479466 Begrazia - Star-mine	BPM 197 → 194（误差 3）	首拍误差 8ms	小节偏差 600ms	kiai 0 → 4（IoU 0.00）
+2484899 dj-Nate - Center of Existence	BPM 185 → 185（误差 0）	首拍误差 158ms	小节偏差 491ms	kiai 5 → 3（IoU 0.42）
+2486486 Reol - Ooedoranvu feat. nqrse -10th annual edition-	BPM 134 → 133（误差 1）	首拍误差 66ms	小节偏差 830ms	kiai 0 → 3（IoU 0.00）
+2489661 DAOKO - Yume Miteta no Atashi -Madobe Rika bootleg-	BPM 200 → 129（误差 71）	首拍误差 89ms	小节偏差 511ms	kiai 20 → 4（IoU 0.41）
+2489820 Sound Souler - Paradise	BPM 126 → 125（误差 1）	首拍误差 133ms	小节偏差 343ms	kiai 2 → 3（IoU 0.30）
+2491637 Taylor Swift - The Way I Loved You (Taylor's Version)	BPM 161 → 161（误差 0）	首拍误差 40ms	小节偏差 705ms	kiai 0 → 3（IoU 0.00）
+2492465 Imperial Circus Dead Decadence - Danzai No Honoo To Koibito-Tachi No Rondo	BPM 174 → 117（误差 57）	首拍误差 74ms	小节偏差 270ms	kiai 5 → 4（IoU 0.08）
+2495128 Official HIGE DANdism - Bad for me (Dz'Xa's Amenpunk)	BPM 200 → 124（误差 76）	首拍误差 127ms	小节偏差 473ms	kiai 5 → 3（IoU 0.48）
+2495265 Erika - I Don't Know (Radio Mix) (Nightcore Mix) (Ethantrix Mix)	BPM 175.5 → 178（误差 2.5）	首拍误差 76ms	小节偏差 76ms	kiai 3 → 3（IoU 0.33）
+2496138 Yorushika - Haru	BPM 204 → 130（误差 74）	首拍误差 32ms	小节偏差 326ms	kiai 0 → 3（IoU 0.00）
+2502229 A crow is white - 9-banme no ___	BPM 158 → 152（误差 6）	首拍误差 3ms	小节偏差 3ms	kiai 4 → 2（IoU 0.27）
+2502640 Various Artists - WINnin' 5	BPM 186 → 185（误差 1）	首拍误差 116ms	小节偏差 116ms	kiai 3 → 4（IoU 0.41）
+2504209 Demetori - Kagayaku Hari no Kobito-zoku ~ Counter-Attack of the Weak	BPM 184 → 190（误差 6）	首拍误差 33ms	小节偏差 33ms	kiai 3 → 5（IoU 0.34）
+2505801 Kuro feat. Kasane Teto SV - Kyouka Ranman	BPM 174 → 172（误差 2）	首拍误差 10ms	小节偏差 679ms	kiai 2 → 3（IoU 0.35）
+2506446 Natsu, Wonder Acute - But I want you close	BPM 198.53 → 199（误差 0.47）	首拍误差 37ms	小节偏差 37ms	kiai 10 → 3（IoU 0.43）
+2509362 Fennel - confess	BPM 178 → 199（误差 21）	首拍误差 31ms	小节偏差 306ms	kiai 5 → 4（IoU 0.30）
+2510947 Ren Queenston - Anthrocon 2012 Megamix (pt. 1)	BPM 190.39 → 191（误差 0.61）	首拍误差 114ms	小节偏差 516ms	kiai 0 → 11（IoU 0.00）
+2512881 The Quick Brown Fox - Big Money	BPM 280 → 138（误差 142）	首拍误差 97ms	小节偏差 332ms	kiai 5 → 4（IoU 0.42）
+2513736 cosMo@bousouP feat. Hatsune Miku - Hatsune Miku no Tomadoi	BPM 228 → 152（误差 76，八度错）	首拍误差 107ms	小节偏差 156ms	kiai 7 → 6（IoU 0.33）
+2517752 shami momo (Kohara Konomi, Kito Akari) - Machikado Tangent (Aethral & YUKIYANAGI Remix)	BPM 172 → 172（误差 0）	首拍误差 35ms	小节偏差 35ms	kiai 5 → 3（IoU 0.39）
+2517924 Ren Queenston - Anthrocon 2012 Megamix (pt. 2)	BPM 205.59 → 103（误差 102.59，八度错）	首拍误差 84ms	小节偏差 84ms	kiai 0 → 13（IoU 0.00）
+2518358 Antistar_Ctymax - Class Memories	BPM 145 → 144（误差 1）	首拍误差 199ms	小节偏差 199ms	kiai 1 → 1（IoU 0.42）
+2519563 Sentire - Arcadia	BPM 120 → 198（误差 78）	首拍误差 66ms	小节偏差 934ms	kiai 4 → 1（IoU 0.34）
+2520359 Frums - Yoku	BPM 190 → 150（误差 40）	首拍误差 125ms	小节偏差 190ms	kiai 4 → 2（IoU 0.50）
+2520986 Memme - BSPower Explosion	BPM 180 → 178（误差 2）	首拍误差 13ms	小节偏差 654ms	kiai 4 → 2（IoU 0.16）
+2522565 Gumi - Catch You Catch Me (TV Size)	BPM 128 → 129（误差 1）	首拍误差 76ms	小节偏差 862ms	kiai 1 → 1（IoU 0.46）
+2522845 Laura Shigihara - Don't Forget	BPM 78 → 148（误差 70）	首拍误差 203ms	小节偏差 203ms	kiai 0 → 1（IoU 0.00）
+2529803 Da Tweekaz - Golden	BPM 140 → 143（误差 3）	首拍误差 165ms	小节偏差 165ms	kiai 2 → 3（IoU 0.38）
+2530304 Zhou Xun - Lyu	BPM 154.99 → 154（误差 0.99）	首拍误差 123ms	小节偏差 123ms	kiai 0 → 5（IoU 0.00）
+2530630 San-Z - Honma ni _Yada_	BPM 160 → 161（误差 1）	首拍误差 52ms	小节偏差 427ms	kiai 0 → 2（IoU 0.00）
+2531128	BPM 64.33 → 191（误差 126.67）	首拍误差 2ms	小节偏差 930ms	kiai 3 → 2（IoU 0.44）
+2532794 Yano Kuromu - Totemo Suteki na Rokugatsu Deshita	BPM 210 → 104（误差 106，八度错）	首拍误差 49ms	小节偏差 49ms	kiai 0 → 4（IoU 0.00）
+2535658 Izumi Akazawa (CV_ Madoka Yonezawa) - Responsibility Response (Cut Ver.)	BPM 202 → 175（误差 27）	首拍误差 90ms	小节偏差 207ms	kiai 1 → 1（IoU 0.33）
+2536084 Amateras Records - Reverside Relief	BPM 147 → 148（误差 1）	首拍误差 48ms	小节偏差 768ms	kiai 3 → 2（IoU 0.43）
+2536459 YENA - Catch Catch (Cut Ver.)	BPM 138 → 137（误差 1）	首拍误差 209ms	小节偏差 644ms	kiai 5 → 1（IoU 0.31）
+2538111 Kikuo - Gomenne Gomenne	BPM 110 → 145（误差 35）	首拍误差 60ms	小节偏差 60ms	kiai 4 → 6（IoU 0.21）
+2539197 Noah - Necrofantasia	BPM 223 → 180（误差 43）	首拍误差 69ms	小节偏差 200ms	kiai 3 → 5（IoU 0.40）
+2539308 YURiCa - RED Signal	BPM 167 → 126（误差 41）	首拍误差 84ms	小节偏差 84ms	kiai 3 → 3（IoU 0.42）
+2539963 Shadren - Lolisquad	BPM 174 → 152（误差 22）	首拍误差 138ms	小节偏差 207ms	kiai 0 → 2（IoU 0.00）
+2540392 Fox Stevenson - Songs Compilation	BPM 175 → 178（误差 3）	首拍误差 116ms	小节偏差 227ms	kiai 0 → 3（IoU 0.00）
+2540933 DJ SHARPNEL - Aim Burst	BPM 191 → 191（误差 0）	首拍误差 13ms	小节偏差 13ms	kiai 3 → 4（IoU 0.26）
+2541751 wotoha - TESHiKANi	BPM 175 → 178（误差 3）	首拍误差 21ms	小节偏差 322ms	kiai 8 → 3（IoU 0.41）
+2542025 kors k - Cry For You [StripE Mix]	BPM 146 → 148（误差 2）	首拍误差 38ms	小节偏差 449ms	kiai 0 → 4（IoU 0.00）
+2544116 Hoobastank - The Reason	BPM 82.98 → 112（误差 29.03）	首拍误差 296ms	小节偏差 1019ms	kiai 0 → 2（IoU 0.00）
+2544216 Kumada Akane & Masui Yuuka - Naze_ Nazo_! ANSWER	BPM 166 → 108（误差 58）	首拍误差 25ms	小节偏差 698ms	kiai 8 → 4（IoU 0.40）
+2544317 Tsukino - Kira Kira _ Heart _3 Linkage!	BPM 180 → 139（误差 41）	首拍误差 149ms	小节偏差 518ms	kiai 3 → 5（IoU 0.41）
+2544326 EmoCosine - Replica	BPM 200 → 176（误差 24）	首拍误差 21ms	小节偏差 21ms	kiai 1 → 2（IoU 0.39）
+2546091 PinkPantheress - Noises	BPM 168.3 → 163（误差 5.3）	首拍误差 158ms	小节偏差 555ms	kiai 0 → 2（IoU 0.00）
+2547114 celtix - Primordial Complex	BPM 280 → 178（误差 102）	首拍误差 94ms	小节偏差 94ms	kiai 3 → 4（IoU 0.34）
+2547978 Nijigasaki High School Idol Club - Nijiiro Passions!	BPM 180 → 185（误差 5）	首拍误差 80ms	小节偏差 253ms	kiai 3 → 3（IoU 0.44）
+2548771 Steely Dan - Peg	BPM 117.02 → 147（误差 29.98）	首拍误差 225ms	小节偏差 801ms	kiai 5 → 2（IoU 0.46）
+2548932 Koji Kondo - Underground Theme	BPM 100.17 → 164（误差 63.83）	首拍误差 180ms	小节偏差 779ms	kiai 0 → 1（IoU 0.00）
+2548964 Viatores Nebulae feat. Megurine Luka - Heart of Epitaph	BPM 280 → 139（误差 141）	首拍误差 80ms	小节偏差 348ms	kiai 27 → 4（IoU 0.39）
+2551316 kors k&MAYA - Incomplete feat. Luschel	BPM 174 → 172（误差 2）	首拍误差 34ms	小节偏差 656ms	kiai 47 → 3（IoU 0.40）
+2551476 Michica Gokubara (CV_ Satsuki Shiina) - Bara no Saku Tekubi	BPM 128 → 129（误差 1）	首拍误差 204ms	小节偏差 673ms	kiai 2 → 2（IoU 0.43）
+2551588 Shimoji Shino - God Save The Girls	BPM 170 → 142（误差 28）	首拍误差 124ms	小节偏差 229ms	kiai 4 → 4（IoU 0.38）
+2553373 yu_tokiwa.djw merge scl.gtr - murmur twins (guitar pop ver.)	BPM 174 → 171（误差 3）	首拍误差 2ms	小节偏差 343ms	kiai 0 → 2（IoU 0.00）
+2553982 Kanaria - Ironic	BPM 198 → 199（误差 1）	首拍误差 130ms	小节偏差 476ms	kiai 2 → 2（IoU 0.49）
+2554257 UNDEAD CORPORATION - Yume	BPM 89 → 110（误差 21）	首拍误差 301ms	小节偏差 373ms	kiai 0 → 0（IoU 1.00）
+2554554 Mitsukiyo - Balloon Party (feat. _namirin)	BPM 145 → 144（误差 1）	首拍误差 5ms	小节偏差 822ms	kiai 3 → 3（IoU 0.36）
+2555009 Culprate & Dictate - Pencilina	BPM 172 → 115（误差 57，八度错）	首拍误差 40ms	小节偏差 388ms	kiai 0 → 4（IoU 0.00）
+2556275 Liao - Aqua	BPM 162 → 161（误差 1）	首拍误差 64ms	小节偏差 677ms	kiai 0 → 3（IoU 0.00）
+2557069 solfa feat. KOTOKO - Fancy Game!_	BPM 175 → 178（误差 3）	首拍误差 21ms	小节偏差 363ms	kiai 0 → 4（IoU 0.00）
+2558946 BilliumMoto - night sky	BPM 161 → 123（误差 38）	首拍误差 89ms	小节偏差 462ms	kiai 1 → 3（IoU 0.26）
+2562120 iKz feat. Kero - Tian Ling Ling Di Ling Ling	BPM 155 → 157（误差 2）	首拍误差 45ms	小节偏差 729ms	kiai 2 → 3（IoU 0.32）
+2562750 leroy - Put me back together [[[ON THE FLOOR]]]	BPM 155 → 157（误差 2）	首拍误差 82ms	小节偏差 82ms	kiai 4 → 5（IoU 0.33）
+2563768 ePiaeon - FAKE UP	BPM 128 → 128（误差 0）	首拍误差 17ms	小节偏差 921ms	kiai 2 → 4（IoU 0.42）
+2566279 Falcom Sound Team jdk feat. Sasaka Megumi - The Whereabouts of Light	BPM 81 → 132（误差 51）	首拍误差 322ms	小节偏差 322ms	kiai 3 → 3（IoU 0.36）
+2566536 zts - the executioner	BPM 134 → 133（误差 1）	首拍误差 11ms	小节偏差 437ms	kiai 0 → 4（IoU 0.00）
+2566690 Glass Animals - Heat Waves	BPM 161.64 → 118（误差 43.64）	首拍误差 167ms	小节偏差 204ms	kiai 4 → 4（IoU 0.46）
+2567181 MN-logic24 feat. mineko - Fujimi no Girlfriend	BPM 175 → 179（误差 4）	首拍误差 46ms	小节偏差 640ms	kiai 0 → 3（IoU 0.00）
+2567710 senya - Kafka Naru Gunjou e	BPM 138 → 137（误差 1）	首拍误差 212ms	小节偏差 647ms	kiai 12 → 6（IoU 0.41）
+2567955 MYTH & ROID - STRAIGHT BET	BPM 170 → 172（误差 2）	首拍误差 40ms	小节偏差 666ms	kiai 4 → 3（IoU 0.36）
+2568234 3-nen E Gumi Utatan - Bye Bye YESTERDAY (TV Size)	BPM 180 → 161（误差 19）	首拍误差 156ms	小节偏差 511ms	kiai 1 → 1（IoU 0.50）
+2568623 Noto Arisa (from StylipS) - Fantastic Field	BPM 175 → 181（误差 6）	首拍误差 104ms	小节偏差 447ms	kiai 9 → 4（IoU 0.36）
+2568959 Billie Eilish - BIRDS OF A FEATHER	BPM 105 → 191（误差 86）	首拍误差 42ms	小节偏差 613ms	kiai 0 → 2（IoU 0.00）
+2569320 Adust Rain - Misery Song	BPM 205 → 152（误差 53）	首拍误差 16ms	小节偏差 16ms	kiai 3 → 6（IoU 0.22）
+2569453 Boxplot - Escape With The Clouds	BPM 178 → 114（误差 64）	首拍误差 4ms	小节偏差 670ms	kiai 6 → 5（IoU 0.44）
+2570494 Jimmy Eat World - Sweetness (Studio Demo)	BPM 135.13 → 172（误差 36.87）	首拍误差 54ms	小节偏差 834ms	kiai 0 → 3（IoU 0.00）
+2571186 Shikata Akiko - Katayoku no Tori	BPM 220 → 172（误差 48）	首拍误差 106ms	小节偏差 167ms	kiai 3 → 4（IoU 0.39）
+2572357	BPM 130 → 178（误差 48）	首拍误差 192ms	小节偏差 731ms	kiai 0 → 3（IoU 0.00）
+2572915 tezuka x Aoi feat. Momohina Nano - Small Cloud Sugar Candy	BPM 220 → 110（误差 110，八度错）	首拍误差 24ms	小节偏差 521ms	kiai 11 → 4（IoU 0.39）
+2573108 Trooper Salute - Zetsuen	BPM 128 → 106（误差 22）	首拍误差 63ms	小节偏差 406ms	kiai 1 → 1（IoU 0.02）
+2573206 ELECTROCUTICA - Piece of Cipher	BPM 130 → 191（误差 61）	首拍误差 51ms	小节偏差 411ms	kiai 0 → 5（IoU 0.00）
+2573482 Pierce The Veil - Disasterology	BPM 160 → 103（误差 57）	首拍误差 25ms	小节偏差 25ms	kiai 2 → 3（IoU 0.25）
+2573853 takehirotei - SEISHUN___NO_HACKING	BPM 179 → 181（误差 2）	首拍误差 9ms	小节偏差 662ms	kiai 22 → 6（IoU 0.28）
+2574601 CHXPO - KAKASHI	BPM 95 → 195（误差 100）	首拍误差 107ms	小节偏差 525ms	kiai 0 → 3（IoU 0.00）
+2574722 Yuzuki - Dear You (DJ Genericname DnB Remix)	BPM 174.1 → 197（误差 22.9）	首拍误差 30ms	小节偏差 315ms	kiai 4 → 2（IoU 0.42）
+2575953 DECO_27 - Ghost Rule	BPM 210 → 142（误差 68）	首拍误差 55ms	小节偏差 55ms	kiai 3 → 3（IoU 0.47）
+2576400 yax03 - RED ZONE	BPM 193 → 191（误差 2）	首拍误差 40ms	小节偏差 40ms	kiai 7 → 4（IoU 0.34）
+2577371 Jeff Buckley - Grace	BPM 64 → 192（误差 128，八度错）	首拍误差 32ms	小节偏差 912ms	kiai 2 → 2（IoU 0.24）
+2577652 Kawada Mami - Serment	BPM 212 → 161（误差 51）	首拍误差 124ms	小节偏差 407ms	kiai 0 → 5（IoU 0.00）
+2577669 Xyris - A Cybernetic-Superluminal-Apocalyptic Post-War Divination	BPM 160 → 155（误差 5）	首拍误差 3ms	小节偏差 3ms	kiai 2 → 3（IoU 0.16）
+2578735 Sasaki Rico - Majestic Catastrophe (TV Size)	BPM 195 → 199（误差 4）	首拍误差 40ms	小节偏差 40ms	kiai 4 → 1（IoU 0.41）
+2578903 HIMEHINA - Bubblin'	BPM 198 → 191（误差 7）	首拍误差 1ms	小节偏差 1ms	kiai 3 → 3（IoU 0.48）
+2579155 Aimer with chelly (EGOIST) - ninelie (TV Size)	BPM 86 → 117（误差 31）	首拍误差 242ms	小节偏差 456ms	kiai 2 → 1（IoU 0.48）
+2579306 Girl's Day - Ring My Bell	BPM 198 → 114（误差 84）	首拍误差 61ms	小节偏差 364ms	kiai 4 → 3（IoU 0.48）
+2579337 MOMOIRO CLOVER Z - SANTA SAN	BPM 190 → 191（误差 1）	首拍误差 57ms	小节偏差 575ms	kiai 10 → 7（IoU 0.39）
+2579675 EmoCosine - You're My Princess	BPM 87.5 → 115（误差 27.5）	首拍误差 31ms	小节偏差 717ms	kiai 1 → 1（IoU 0.44）
+2580972 LAST ALLIANCE - MOUMOKU NO STRANGER	BPM 165 → 165（误差 0）	首拍误差 108ms	小节偏差 619ms	kiai 0 → 4（IoU 0.00）
+2581376 eFeL - Broken Hearts	BPM 100 → 114（误差 14）	首拍误差 291ms	小节偏差 891ms	kiai 0 → 2（IoU 0.00）
+2581387 KOTAK - Pelan-Pelan Saja	BPM 76.01 → 152（误差 75.99，八度错）	首拍误差 33ms	小节偏差 1546ms	kiai 4 → 2（IoU 0.46）
+2581407 Suzuki Aina - Hikariiro no Uta	BPM 188 → 136（误差 52）	首拍误差 47ms	小节偏差 47ms	kiai 1 → 4（IoU 0.10）
+2582476 millsage - Kishi Kaisen	BPM 170 → 170（误差 0）	首拍误差 30ms	小节偏差 323ms	kiai 6 → 3（IoU 0.28）
+2582629 Seraph - Beautiful Your Life	BPM 160 → 161（误差 1）	首拍误差 84ms	小节偏差 459ms	kiai 5 → 6（IoU 0.26）
+2582930 Toby Fox - Petal Dance	BPM 145 → 144（误差 1）	首拍误差 24ms	小节偏差 804ms	kiai 1 → 1（IoU 0.48）
+2583143 Skee-Lo - I Wish	BPM 97.86 → 148（误差 50.14）	首拍误差 112ms	小节偏差 1114ms	kiai 3 → 3（IoU 0.38）
+2583639 yax03 - down	BPM 172 → 172（误差 0）	首拍误差 154ms	小节偏差 544ms	kiai 0 → 3（IoU 0.00）
+2583923 Sydosys - Radium	BPM 175 → 178（误差 3）	首拍误差 57ms	小节偏差 628ms	kiai 0 → 4（IoU 0.00）
+2584471 Risa Yuzuki - Tarantella (feat. BlackY)	BPM 148 → 148（误差 0）	首拍误差 46ms	小节偏差 46ms	kiai 3 → 3（IoU 0.41）
+2585933 Zekk - Vespera	BPM 185 → 185（误差 0）	首拍误差 144ms	小节偏差 469ms	kiai 1 → 2（IoU 0.38）
+2586015 Kato Megumi (CV_ Yasuno Kiyono) - M flat (Cut Ver.)	BPM 160 → 161（误差 1）	首拍误差 123ms	小节偏差 498ms	kiai 1 → 1（IoU 0.45）
+2586326 ILLIT - It's Me	BPM 147 → 146（误差 1）	首拍误差 39ms	小节偏差 777ms	kiai 8 → 3（IoU 0.35）
+2586784 Pinku Rimu feat. Nyxtoria - Pink Dreamy	BPM 134 → 170（误差 36）	首拍误差 97ms	小节偏差 798ms	kiai 0 → 2（IoU 0.00）
+2586824 Jun Ishikawa - Staff Roll (Extended Edit)	BPM 170 → 161（误差 9）	首拍误差 62ms	小节偏差 62ms	kiai 2 → 6（IoU 0.18）
+2588198 LE SSERAFIM - No Celestial	BPM 138 → 173（误差 35）	首拍误差 43ms	小节偏差 392ms	kiai 3 → 3（IoU 0.49）
+2588642 SAWTOWNE - Chu! Future_Express!	BPM 195 → 194（误差 1）	首拍误差 90ms	小节偏差 398ms	kiai 3 → 3（IoU 0.25）
+2588849 Nekomata Master feat. _spiLa_ - Clumsy thoughts	BPM 153 → 152（误差 1）	首拍误差 21ms	小节偏差 21ms	kiai 0 → 3（IoU 0.00）
+2588865 Lisa Chikafuji - Forevermore	BPM 70 → 142（误差 72）	首拍误差 333ms	小节偏差 333ms	kiai 0 → 3（IoU 0.00）
+2588980 Laur - Sound Chimera	BPM 190 → 191（误差 1）	首拍误差 89ms	小节偏差 405ms	kiai 4 → 3（IoU 0.22）
+2589729 Inori Minase - Reflorescence	BPM 190 → 128（误差 62）	首拍误差 29ms	小节偏差 602ms	kiai 8 → 3（IoU 0.43）
+2591197 Yousei Teikoku - Asgard (Game Ver.)	BPM 260 → 191（误差 69）	首拍误差 62ms	小节偏差 62ms	kiai 1 → 1（IoU 0.46）
+2591350 asteria - EYES ON ME	BPM 143 → 143（误差 0）	首拍误差 54ms	小节偏差 366ms	kiai 0 → 2（IoU 0.00）
+2592739 Alvvays - Saved By A Waif	BPM 177.75 → 197（误差 19.25）	首拍误差 10ms	小节偏差 347ms	kiai 2 → 4（IoU 0.36）
+2592850 deadbeak, P1PER - beyond the horizon with you w_ P1PER	BPM 182 → 181（误差 1）	首拍误差 47ms	小节偏差 47ms	kiai 5 → 4（IoU 0.44）
+2593046 HOYO-MiX - Gilded Runner	BPM 136 → 137（误差 1）	首拍误差 52ms	小节偏差 830ms	kiai 0 → 2（IoU 0.00）
+2593080 sampling masters MEGA & Tatsh - Weave Detonator	BPM 180 → 178（误差 2）	首拍误差 55ms	小节偏差 55ms	kiai 3 → 6（IoU 0.19）
+2593125 Lady Gaga - Judas	BPM 131 → 133（误差 2）	首拍误差 46ms	小节偏差 870ms	kiai 3 → 3（IoU 0.45）
+2594021 Vanguard Sound - Emocode (feat. Xia Tong Zi)	BPM 173 → 114（误差 59）	首拍误差 85ms	小节偏差 85ms	kiai 3 → 3（IoU 0.42）
+2594707 Satellite Young feat. Mitch Murder - Sniper Rouge	BPM 157 → 156（误差 1）	首拍误差 25ms	小节偏差 25ms	kiai 3 → 4（IoU 0.39）
+2595290 Camellia - Luin of Celtchar	BPM 153 → 152（误差 1）	首拍误差 4ms	小节偏差 388ms	kiai 0 → 7（IoU 0.00）
+2596060 Hearts2Hearts - FOCUS	BPM 130 → 195（误差 65，八度错）	首拍误差 190ms	小节偏差 272ms	kiai 0 → 3（IoU 0.00）
+2596710 kuro - Mare Aeterna	BPM 190 → 144（误差 46）	首拍误差 121ms	小节偏差 511ms	kiai 0 → 8（IoU 0.00）
+2597254 PassCode - Ray (TV Size)	BPM 196 → 117（误差 79）	首拍误差 57ms	小节偏差 57ms	kiai 1 → 4（IoU 0.18）
+2598024 Kano - Sukisuki Zecchoushou	BPM 234 → 117（误差 117，八度错）	首拍误差 31ms	小节偏差 482ms	kiai 3 → 5（IoU 0.37）
+2598255 GALNERYUS - RAISE MY SWORD	BPM 184 → 174（误差 10）	首拍误差 49ms	小节偏差 49ms	kiai 6 → 4（IoU 0.33）
+2598405 ePiaeon - DIAL LOOP	BPM 169 → 124（误差 45）	首拍误差 116ms	小节偏差 471ms	kiai 0 → 2（IoU 0.00）
+2598781 Monster Siren Records - Lian Fan Nao Ye Rong Ru Tian Kong	BPM 172 → 172（误差 0）	首拍误差 70ms	小节偏差 628ms	kiai 0 → 3（IoU 0.00）
+2599137 Fellowship - Oak and Ash	BPM 210 → 105（误差 105，八度错）	首拍误差 46ms	小节偏差 46ms	kiai 0 → 3（IoU 0.00）
+2599213 endofsystem - silly bnuy song	BPM 120 → 161（误差 41）	首拍误差 153ms	小节偏差 347ms	kiai 0 → 0（IoU 1.00）
+2599793 saikuuna, BLESSED MANE - eve	BPM 170 → 115（误差 55）	首拍误差 97ms	小节偏差 450ms	kiai 1 → 2（IoU 0.34）
+2600298 Metal Scar Radio - Mirairo Rider (Japanese Ver.) (Game Ver.)	BPM 188 → 164（误差 24）	首拍误差 127ms	小节偏差 511ms	kiai 2 → 1（IoU 0.49）
+2600427 t+pazolite - Ofcourse you Need and nEed and neEd and neeD and NEED ME_	BPM 240 → 135（误差 105）	首拍误差 3ms	小节偏差 497ms	kiai 0 → 5（IoU 0.00）
+2600443 Camellia - FLYING OUT TO THE SKY (covered by Nanahira, moimoi, Nana Takahashi)	BPM 244 → 128（误差 116）	首拍误差 36ms	小节偏差 456ms	kiai 9 → 3（IoU 0.44）
+2600632 Frypt - FILTER FOCUS	BPM 210 → 105（误差 105，八度错）	首拍误差 88ms	小节偏差 374ms	kiai 3 → 4（IoU 0.40）
+2601234 Okabe Keiichi feat. Takamitsu Youko - Angel Dream	BPM 180 → 178（误差 2）	首拍误差 147ms	小节偏差 186ms	kiai 2 → 2（IoU 0.46）
+2601381 StelLive - STAR TRAIL	BPM 188 → 165（误差 23）	首拍误差 116ms	小节偏差 435ms	kiai 4 → 3（IoU 0.41）
+2601907 Naoki Urasawa - Bob Lennon (Kenji no Uta)	BPM 71 → 107（误差 36，八度错）	首拍误差 82ms	小节偏差 82ms	kiai 2 → 2（IoU 0.41）
+2602128 The Smashing Pumpkins - 1979	BPM 126.87 → 167（误差 40.13）	首拍误差 163ms	小节偏差 636ms	kiai 1 → 3（IoU 0.21）
+2602772	BPM 190 → 188（误差 2）	首拍误差 23ms	小节偏差 339ms	kiai 4 → 6（IoU 0.38）
+2602912 Taylor Acorn - Goodbye, Good Riddance (Nightcore & Cut Ver.)	BPM 180 → 183（误差 3）	首拍误差 82ms	小节偏差 415ms	kiai 3 → 1（IoU 0.48）
+2602982 Bu Jiang Li Mao - Qiu Ri Wu Yu	BPM 138 → 172（误差 34）	首拍误差 61ms	小节偏差 61ms	kiai 0 → 3（IoU 0.00）
+2603046 Uesaka Sumire - Happy End Princess (TV Size)	BPM 174 → 172（误差 2）	首拍误差 167ms	小节偏差 523ms	kiai 2 → 1（IoU 0.44）
+2603242 glass beach - cold weather	BPM 155 → 154（误差 1）	首拍误差 14ms	小节偏差 761ms	kiai 0 → 4（IoU 0.00）
+2603357 Puppet - Good Day (feat. Azuria Sky & Keepsake)	BPM 130 → 129（误差 1）	首拍误差 169ms	小节偏差 293ms	kiai 8 → 7（IoU 0.21）
+2603912 Morimori Atsushi - MilK	BPM 150 → 152（误差 2）	首拍误差 198ms	小节偏差 598ms	kiai 0 → 3（IoU 0.00）
+2604200 ta1lsd0ll - ta1lsd001	BPM 200 → 199（误差 1）	首拍误差 75ms	小节偏差 525ms	kiai 3 → 1（IoU 0.00）
+2605356 Natalie Imbruglia - Torn	BPM 96.29 → 148（误差 51.72）	首拍误差 96ms	小节偏差 96ms	kiai 1 → 5（IoU 0.14）
+2605367 Taylor Acorn - Everything Sucks (Cut Ver.)	BPM 178 → 178（误差 0）	首拍误差 29ms	小节偏差 29ms	kiai 0 → 1（IoU 0.00）
+2605585 Affected - Justice Breaker	BPM 205 → 102（误差 103，八度错）	首拍误差 22ms	小节偏差 564ms	kiai 0 → 2（IoU 0.00）
+2605983	BPM 110 → 161（误差 51）	首拍误差 168ms	小节偏差 714ms	kiai 8 → 3（IoU 0.34）
+2607286 DJ YUNG VAMP - IM ON DA BLOCK	BPM 160 → 106（误差 54，八度错）	首拍误差 57ms	小节偏差 432ms	kiai 5 → 3（IoU 0.49）
+2607658 ABSOLUTE CASTAWAY - TRUTH	BPM 176 → 178（误差 2）	首拍误差 73ms	小节偏差 414ms	kiai 9 → 4（IoU 0.39）
+2608103 Ariabl'eyeS - Senkou no Flare	BPM 215 → 158（误差 57）	首拍误差 92ms	小节偏差 371ms	kiai 0 → 5（IoU 0.00）
+2608128 KAKO - _if_	BPM 164 → 167（误差 3）	首拍误差 24ms	小节偏差 390ms	kiai 3 → 3（IoU 0.32）
+2608353 Ninajirachi - iPod Touch	BPM 138 → 140（误差 2）	首拍误差 132ms	小节偏差 303ms	kiai 1 → 1（IoU 0.36）
+2608752 tachibanaka - Journey	BPM 96 → 196（误差 100）	首拍误差 263ms	小节偏差 987ms	kiai 1 → 1（IoU 0.33）
+2609063 KASAI HARCORES - CYCLE HIT	BPM 175 → 177（误差 2）	首拍误差 65ms	小节偏差 621ms	kiai 0 → 4（IoU 0.00）
+2609743 Laur - Executioner	BPM 265 → 199（误差 66）	首拍误差 75ms	小节偏差 301ms	kiai 2 → 4（IoU 0.22）
+2609821 irojiro - Kimiiro Hanabi	BPM 182 → 179（误差 3）	首拍误差 39ms	小节偏差 290ms	kiai 2 → 3（IoU 0.13）
+2610200 Various Artists - BoC-izm	BPM 105 → 137（误差 32）	首拍误差 198ms	小节偏差 769ms	kiai 10 → 4（IoU 0.30）
+2610353 Maroon 5 - Wake Up Call	BPM 82 → 167（误差 85）	首拍误差 43ms	小节偏差 689ms	kiai 0 → 3（IoU 0.00）
+2610414 moly - New Wonders	BPM 105 → 81（误差 24）	首拍误差 148ms	小节偏差 719ms	kiai 1 → 1（IoU 0.49）
+2610509 Clark Rainbow - Chainsaw	BPM 154.89 → 156（误差 1.11）	首拍误差 28ms	小节偏差 415ms	kiai 3 → 3（IoU 0.49）
+2610601 BLANKFIELD - Before He Dies	BPM 250 → 155（误差 95）	首拍误差 56ms	小节偏差 424ms	kiai 0 → 4（IoU 0.00）
+2610904 Ado - Fairytale,	BPM 194 → 148（误差 46）	首拍误差 117ms	小节偏差 117ms	kiai 5 → 5（IoU 0.41）
+2611091 Baby's breath - Habataki no Birthday	BPM 181 → 178（误差 3）	首拍误差 151ms	小节偏差 512ms	kiai 3 → 4（IoU 0.39）
+2611631 TUMENECO VS. GET IN THE RING - Yumeuta - Tokubetsu na Futari no Uta	BPM 200 → 124（误差 76）	首拍误差 13ms	小节偏差 13ms	kiai 3 → 6（IoU 0.34）
+2611690 t+pazolite - Chartreuse Green	BPM 180 → 181（误差 1）	首拍误差 51ms	小节偏差 51ms	kiai 5 → 2（IoU 0.41）
+2611765	BPM 247 → 161（误差 86）	首拍误差 102ms	小节偏差 141ms	kiai 5 → 2（IoU 0.50）
+2611802 Ludicin - Fallen Symphony	BPM 250 → 124（误差 126）	首拍误差 104ms	小节偏差 136ms	kiai 10 → 5（IoU 0.26）
+2611896 KOTOKO - Wing my Way	BPM 118.04 → 118（误差 0.04）	首拍误差 34ms	小节偏差 34ms	kiai 3 → 4（IoU 0.32）
+2612146 Laufey - Falling Behind	BPM 166 → 165（误差 1）	首拍误差 11ms	小节偏差 350ms	kiai 0 → 3（IoU 0.00）
+2612392 Redside feat. Hatsune Miku - Constellations	BPM 175 → 102（误差 73）	首拍误差 93ms	小节偏差 436ms	kiai 15 → 4（IoU 0.42）
+2612889 Relanium - Leel Lost (Original Mix)	BPM 130 → 130（误差 0）	首拍误差 15ms	小节偏差 447ms	kiai 0 → 2（IoU 0.00）
+2613045 FictionJunction - Kanata	BPM 165 → 164（误差 1）	首拍误差 82ms	小节偏差 82ms	kiai 1 → 5（IoU 0.14）
+2613287 Chief Keef - War	BPM 70 → 189（误差 119）	首拍误差 387ms	小节偏差 387ms	kiai 0 → 2（IoU 0.00）
+2613712 Akiri - my new song	BPM 170 → 167（误差 3）	首拍误差 4ms	小节偏差 349ms	kiai 0 → 1（IoU 0.00）
+2614459 my bloody valentine - when you sleep	BPM 128.87 → 144（误差 15.13）	首拍误差 86ms	小节偏差 552ms	kiai 6 → 4（IoU 0.47）
+2614719 Aoratos - Thresher	BPM 150 → 152（误差 2）	首拍误差 38ms	小节偏差 762ms	kiai 5 → 8（IoU 0.19）
+2614898 Yuyoyuppe - Hidamari no Shi	BPM 136 → 101（误差 35）	首拍误差 193ms	小节偏差 634ms	kiai 3 → 4（IoU 0.33）
+2616518 Camellia vs. Kaminose Tsukasa - Resonant Musical Automaton of Twin Agates	BPM 360 → 192（误差 168）	首拍误差 34ms	小节偏差 201ms	kiai 3 → 1（IoU 0.36）
+2616698 Ami Ishii - Hirogaru Sky! Precure ~Hero Girls~	BPM 184 → 176（误差 8）	首拍误差 48ms	小节偏差 278ms	kiai 3 → 6（IoU 0.24）
+2616740 Nanamori-chu _ Goraku-bu - Happy Time wa Owaranai	BPM 190 → 197（误差 7）	首拍误差 151ms	小节偏差 151ms	kiai 7 → 4（IoU 0.38）
+2618545 fakemink - Night, Blooming Jasmine .	BPM 107.35 → 144（误差 36.65）	首拍误差 129ms	小节偏差 989ms	kiai 0 → 4（IoU 0.00）
+2618764 Seven Lions & Echos - Cold Skin (Stonebank Remix)	BPM 170 → 169（误差 1）	首拍误差 43ms	小节偏差 310ms	kiai 4 → 2（IoU 0.43）
+2623051 KikuoHana - Hikari yo	BPM 256 → 148（误差 108）	首拍误差 103ms	小节偏差 132ms	kiai 0 → 3（IoU 0.00）
+2623401 Nanamori-chu _ Goraku-bu - Happy Time wa Owaranai	BPM 190 → 197（误差 7）	首拍误差 147ms	小节偏差 147ms	kiai 3 → 4（IoU 0.40）
+358195 COOL&CREATE - Saishuu Kichiku Imouto Flandre-S	BPM 200 → 198（误差 2）	首拍误差 3ms	小节偏差 303ms	kiai 3 → 3（IoU 0.36）
+452850 3-nen E Gumi Nurutan - 3-nen E Gumi Nurunuru Ondo (Game Ver.)	BPM 135 → 136（误差 1）	首拍误差 53ms	小节偏差 498ms	kiai 2 → 3（IoU 0.34）
+458754 Aimer with chelly (EGOIST) - ninelie	BPM 86 → 116（误差 30）	首拍误差 224ms	小节偏差 922ms	kiai 1 → 2（IoU 0.17）
+516709 Teminite - Animal (Cut Ver.)	BPM 150 → 148（误差 2）	首拍误差 57ms	小节偏差 743ms	kiai 4 → 3（IoU 0.42）
+57374 Rocco & Bass-T - Our Generation (Jens O. vs. Ti-Mo Remix Edit) (Cut Ver.)	BPM 148 → 148（误差 0）	首拍误差 202ms	小节偏差 608ms	kiai 10 → 2（IoU 0.31）
+791287 GRANRODEO - The Other self	BPM 150 → 191（误差 41）	首拍误差 149ms	小节偏差 251ms	kiai 5 → 5（IoU 0.30）
+839164 Camellia - NUCLEAR-STAR	BPM 199 → 199（误差 0）	首拍误差 10ms	小节偏差 292ms	kiai 2 → 4（IoU 0.21）
+853544 Yousei Teikoku - Psychomachia (Extended Edit)	BPM 180 → 114（误差 66）	首拍误差 91ms	小节偏差 576ms	kiai 1 → 0（IoU 0.00）
+924734 Yuna (CV_ Kanda Sayaka) - Break Beat Bark!	BPM 188 → 133（误差 55）	首拍误差 45ms	小节偏差 45ms	kiai 9 → 6（IoU 0.34）
+977284 Matrix & Futurebound - Fire (feat. Max Marshall)	BPM 174 → 172（误差 2）	首拍误差 20ms	小节偏差 365ms	kiai 8 → 2（IoU 0.46）
 
 == 汇总 ==
-BPM 完全正确：5/29（八度错 3 张）
-BPM 平均绝对误差：47.42
-首拍误差中位数：48ms
-kiai 段数一致：4/29；平均 IoU（边界容差 500ms）：0.24
+BPM 完全正确：49/302（八度错 18 张）
+BPM 平均绝对误差：32.31
+首拍误差中位数：65ms
+小节偏差中位数：387ms（≥半拍说明整拍错位）
+kiai 段数一致：60/302；平均 IoU（边界容差 500ms）：0.26
 

@@ -14,6 +14,7 @@ using osu.Game.Overlays;
 using osu.Game.Overlays.Notifications;
 using OsuPlayer.Game.KuGou;
 using OsuPlayer.Game.Logging;
+using OsuPlayer.Game.Music.BeatSync.Onnx;
 using OsuPlayer.Game.Net;
 using osu.Framework.Logging;
 
@@ -55,6 +56,24 @@ namespace OsuPlayer.Game.Music
         public BindableDouble Tempo { get; } = new(1);
         public Bindable<string> Quality { get; } = new("128");
         public Bindable<RepeatMode> Repeat { get; } = new(RepeatMode.All);
+
+        /// <summary>
+        /// BPM 检测模式（原生 / ONNX）。换歌时决定用哪条检测管线，随播放状态持久化。
+        /// 设置页的面板写它，<c>MusicBeatSyncProvider</c> 读它。
+        /// </summary>
+        public Bindable<BpmDetectionMode> BpmMode { get; } = new(BpmDetectionMode.Native);
+
+        /// <summary>
+        /// 调试模式：开启后应用进入"超级诊断模式"——全量日志 + osu! 原生性能分析 + 性能叠加层 +
+        /// 周期性能快照。由设置页的开关控制，<c>OsuPlayerGame</c> 监听它来实际开关。
+        /// </summary>
+        public BindableBool DebugMode { get; } = new();
+
+        /// <summary>
+        /// 是否显示右下角的 osu! 原生帧率计数器（由设置页「图形 → 显示帧率」控制）。
+        /// <c>OsuPlayerGame</c> 会把它同步到 <c>OsuSetting.ShowFpsDisplay</c>，供 <c>FPSCounter</c> 读取。
+        /// </summary>
+        public BindableBool ShowFps { get; } = new(true);
         public Bindable<string> StatusText { get; } = new(string.Empty);
         public Bindable<string> CurrentCover { get; } = new(string.Empty);
 
@@ -70,6 +89,24 @@ namespace OsuPlayer.Game.Music
         public BindableList<SongInfo> Queue { get; } = [];
         public BindableList<SongInfo> History { get; } = [];
         public BindableList<SongInfo> Liked { get; } = [];
+
+        /// <summary>
+        /// 已登录时「我喜欢」对应的账号歌单 id（见 <see cref="RefreshLikedAsync"/>）；0 表示尚未解析。
+        /// 未登录时始终为 0，此时 <see cref="Liked"/> 是本地维护的列表。
+        /// </summary>
+        private long likedListId;
+
+        /// <summary>账号歌单一次拉取的曲目上限（酷狗 App 云歌单同款页大小）。</summary>
+        private const int liked_page_size = 300;
+
+        /// <summary>正在进行的歌单同步：并发调用（打开面板 + 点喜欢）合并成一次请求。</summary>
+        private Task<IReadOnlyList<SongInfo>?>? likedSyncInFlight;
+
+        /// <summary>最近一次歌单同步的时间，用于给强制刷新设下限。</summary>
+        private DateTime likedSyncedAt;
+
+        /// <summary>强制刷新之间的最小间隔：面板每次打开都强制拉一次，在风控下就变成一串十几秒的请求。</summary>
+        private static readonly TimeSpan liked_force_min_interval = TimeSpan.FromMinutes(2);
 
         /// <summary>曲目从磁盘导入（见 <see cref="SongInfo.LocalPath"/>），随播放状态一起持久化。</summary>
         public BindableList<SongInfo> LocalTracks { get; } = [];
@@ -91,6 +128,46 @@ namespace OsuPlayer.Game.Music
 
         /// <summary>Position to restore once the next track starts (used when re-resolving after a login).</summary>
         private double resumeOnStartMs;
+
+        /// <summary>
+        /// 界面当前停留的定位目标（拖动时是用户拖到的位置，松手/点击时是提交的目标）。
+        /// 拖动回调在 input 线程、<see cref="Update"/> 在 update 线程，所以用 <see cref="double"/>
+        /// + <see cref="bool"/> 而不是 <c>double?</c>：8 字节的 double 读写是原子的，16 字节的
+        /// Nullable 可能被撕裂。
+        /// </summary>
+        private double holdDisplayMs;
+
+        /// <summary>是否存在界面停留目标。拖动中与定位提交后为 true，直到音轨到位。</summary>
+        private bool holdActive;
+
+        /// <summary>
+        /// 该目标是否已经提交给音轨。拖动中为 false —— 拖动只更新界面、**不动音轨**
+        /// （原因见 <see cref="Scrub"/>）；只有提交过的定位才做落地/超时判定。
+        /// </summary>
+        private bool holdSubmitted;
+
+        /// <summary>提交给音轨的时刻，用于定位未落地时的超时兜底。</summary>
+        private double holdSubmittedAtMs;
+
+        /// <summary>判定一次异步 seek 已落地的容差（毫秒）。</summary>
+        private const double seek_settle_tolerance_ms = 60;
+
+        /// <summary>定位提交后，界面停留目标的最长保留时间，避免未落地时显示被永久钉住。</summary>
+        private const double seek_hold_timeout_ms = 2000;
+
+        /// <summary>
+        /// 定位请求的合并状态（见 <see cref="requestTrackSeek"/>）。音频线程的一帧会把
+        /// <c>PendingActions</c> 队列**全部**串行跑完（<c>AudioComponent.Update</c> 的 while 出队），
+        /// 所以每多排队一个 seek，那一帧就多卡一次：快速拖动/点击会把几十上百次定位塞进同一帧，
+        /// 实测导致音频线程单帧长达 12.8 秒（表现为"音频线程几乎不走"）。
+        /// 这里保证**同时只有一个 seek 在飞行中**、且只保留最新目标 —— 不引入任何人为延迟，
+        /// 第一次定位立刻发出，音频以 BASS 能处理的最快速度跟手，来不及处理的中间位置直接丢弃。
+        /// </summary>
+        private readonly object seekLock = new();
+
+        private double seekTargetMs;
+        private bool hasSeekTarget;
+        private bool seekInFlight;
 
         /// <summary>Slack when deciding a track has reached its end; also catches a seek onto the last sample.</summary>
         private const double end_epsilon_ms = 150;
@@ -114,10 +191,18 @@ namespace OsuPlayer.Game.Music
         /// <summary>Resolved audio URL of <see cref="CurrentTrack"/>, used for offline beat analysis.</summary>
         public string? CurrentStreamUrl { get; private set; }
 
-        private static readonly string[] quality_cycle = { "128", "320", "flac", "high" };
-        private static readonly double[] tempo_cycle = { 1.0, 1.25, 0.75 };
-        private int qualityIndex;
-        private int tempoIndex;
+        /// <summary>
+        /// 可选音质，顺序即底栏「音质」下拉里的顺序：<c>Value</c> 是接口参数，<c>Label</c> 是界面文案。
+        /// 五档与 EchoMusic 一致；<c>super</c> 是酷狗返回 DSD 格式音频的档位（见 KuGouMusicApi 文档）。
+        /// </summary>
+        public static readonly (string Value, string Label)[] QualityOptions =
+        {
+            ("128", "标准"),
+            ("320", "高品"),
+            ("flac", "无损"),
+            ("high", "Hi-Res无损"),
+            ("super", "DSD臻品"),
+        };
 
         // -------- 淡入淡出（EchoMusic 式切歌/暂停过渡，避免爆音与突兀起停） --------
 
@@ -154,6 +239,25 @@ namespace OsuPlayer.Game.Music
 
         /// <summary>验证失败/取消后的冷却截止时间：期间不再弹验证页，避免反复打扰。</summary>
         private DateTime verificationRetryAfter;
+
+        /// <summary>
+        /// 风控冷却时长。酷狗一旦对某次请求下发 20028（人机验证），会连带把该账号后续请求拖慢到
+        /// 十几到二十秒（实测 17–21s）；此时继续打领取 / 升级 / 歌单同步只会让整个会话一直挂在
+        /// 验证事件上，所以这里统一进入冷却。
+        /// </summary>
+        private static readonly TimeSpan risk_control_delay = TimeSpan.FromMinutes(5);
+
+        /// <summary>风控冷却截止时间：期间跳过自动的领取/升级与歌单同步。</summary>
+        private DateTime riskControlUntil;
+
+        /// <summary>
+        /// 触发风控的那次操作。浏览器验证通过后立即重试它 —— 验证的目的就是解除这次 20028，
+        /// 验证完了却继续被冷却挡住等于白做。
+        /// </summary>
+        private Func<Task>? pendingVerificationRetry;
+
+        /// <summary>本会话是否已经跑过自动领取流程（启动恢复登录 + 扫码登录成功都会触发刷新）。</summary>
+        private bool vipClaimAttempted;
 
         /// <summary>本机记录的最后一次概念版权益领取日期（每次会话内避免重复领取）。</summary>
         private string? vipClaimDate;
@@ -192,6 +296,11 @@ namespace OsuPlayer.Game.Music
 
             Volume.BindValueChanged(_ => applyTrackVolume(currentTrack), true);
 
+            // 倍速的可调范围与分度（界面上由底栏「倍数」下拉里的滑块调整，0.5x–3.0x，步进 0.01）。
+            Tempo.MinValue = 0.5;
+            Tempo.MaxValue = 3.0;
+            Tempo.Precision = 0.01;
+
             Tempo.BindValueChanged(v =>
             {
                 if (currentTrack is not null)
@@ -211,6 +320,9 @@ namespace OsuPlayer.Game.Music
             Tempo.BindValueChanged(_ => queueStateSave());
             Quality.BindValueChanged(_ => queueStateSave());
             Repeat.BindValueChanged(_ => queueStateSave());
+            BpmMode.BindValueChanged(_ => queueStateSave());
+            DebugMode.BindValueChanged(_ => queueStateSave());
+            ShowFps.BindValueChanged(_ => queueStateSave());
             Liked.BindCollectionChanged((_, _) => queueStateSave());
             History.BindCollectionChanged((_, _) => queueStateSave());
             LocalTracks.BindCollectionChanged((_, _) => queueStateSave());
@@ -237,7 +349,12 @@ namespace OsuPlayer.Game.Music
 
             // 已恢复登录时补领当天的概念版权益（换机器/换天启动都能自动生效）。
             if (IsLoggedIn)
+            {
                 _ = claimDailyVipAsync();
+
+                // 「喜欢」跟着账号走：启动时同步一次账号的「我喜欢」歌单。
+                _ = RefreshLikedAsync(force: true);
+            }
         }
 
         public bool IsLoggedIn => api.Session.IsLoggedIn;
@@ -251,6 +368,9 @@ namespace OsuPlayer.Game.Music
             AppLog.Player.Add($"退出登录（原用户 ID：{api.Session.UserId}）", LogLevel.Important);
             api.Session.Logout();
             api.ResetPlayAuth(); // 授权串是按账号签发的，换账号必须重取
+            likedListId = 0;     // 「喜欢」退回本地列表
+            vipClaimAttempted = false;  // 换账号后重新跑一次自动领取
+            riskControlUntil = default; // 风控是按账号/会话的，重登时给它一次机会
             LoggedIn.Value = false;
             saveState();
         }
@@ -261,10 +381,21 @@ namespace OsuPlayer.Game.Music
                 () => mapAsync(() => api.SearchSongsAsync(keyword, 1, 30), KuGouMapper.SearchResults),
                 songs => $"，{songs.Count} 条结果");
 
-        public Task<IReadOnlyList<SongInfo>> GetRecommendAsync()
-            => AppLog.Player.TimeAsync("获取首页推荐",
-                () => mapAsync(() => api.GetHomeRecommendAsync(20), KuGouMapper.HomeRecommend),
-                songs => $"，{songs.Count} 首");
+        /// <summary>首页推荐缓存。推荐页只在点「刷新推荐」时重新拉取，进入页面直接显示这份缓存。</summary>
+        public IReadOnlyList<SongInfo>? CachedRecommend { get; private set; }
+
+        /// <summary>单次拉取的推荐条数（酷狗接口的 pagesize）。</summary>
+        private const int recommend_page_size = 50;
+
+        public async Task<IReadOnlyList<SongInfo>> GetRecommendAsync()
+        {
+            IReadOnlyList<SongInfo> songs = await AppLog.Player.TimeAsync("获取首页推荐",
+                () => mapAsync(() => api.GetHomeRecommendAsync(recommend_page_size), KuGouMapper.HomeRecommend),
+                r => $"，{r.Count} 首").ConfigureAwait(true);
+
+            CachedRecommend = songs;
+            return songs;
+        }
 
         public Task<IReadOnlyList<SongInfo>> GetPersonalFmAsync()
             => AppLog.Player.TimeAsync("获取私人 FM",
@@ -442,7 +573,123 @@ namespace OsuPlayer.Game.Music
             Seek(timeMs);
         }
 
+        /// <summary>一次性精确跳转：点击进度条、松手提交、程序化定位（恢复/循环等）。</summary>
         public void Seek(double timeMs)
+        {
+            endHandled = false;
+
+            double clamped = clampSeek(timeMs);
+
+            holdDisplayMs = clamped;
+            holdActive = true;
+            holdSubmitted = true;
+            holdSubmittedAtMs = Clock.CurrentTime;
+            CurrentTimeMs.Value = clamped;
+
+            requestTrackSeek(clamped);
+        }
+
+        /// <summary>
+        /// 拖动进度条时的连续定位。是否让音频实时跟手取决于当前音质：
+        ///   · 标准 / 高品（mp3）：每个拖动位置立即交给音轨，音频实时跟手；
+        ///   · 无损及以上（flac / Hi-Res / DSD）：拖动中**不碰音轨**（只更新界面），松手时由
+        ///     <see cref="Seek"/> 提交一次 —— 这些格式在拖动中频繁定位代价高，容易把音频拖卡。
+        /// 实时路径下的合并/串行化由 <see cref="requestTrackSeek"/> 负责，不会把几十次定位堆进音频线程同一帧。
+        /// </summary>
+        public void Scrub(double timeMs)
+        {
+            endHandled = false;
+
+            double clamped = clampSeek(timeMs);
+
+            holdDisplayMs = clamped;
+            holdActive = true;
+            holdSubmitted = false;
+            CurrentTimeMs.Value = clamped;
+
+            if (isLosslessOrHigher(Quality.Value))
+                return;
+
+            requestTrackSeek(clamped);
+        }
+
+        /// <summary>无损及以上的音质档位：拖动中不做实时定位（见 <see cref="Scrub"/>）。</summary>
+        private static bool isLosslessOrHigher(string quality) => quality is "flac" or "high" or "super";
+
+        /// <summary>
+        /// 登记一次定位请求并**立刻**发往音频线程（拖动中的每个位置、点击、松手提交都走这里）。
+        ///
+        /// 必须合并的原因：音频线程的一帧会把 <c>PendingActions</c> 队列全部串行跑完
+        /// （<c>AudioComponent.Update</c> 的 while 出队），每多排队一个 seek 那一帧就多卡一次；
+        /// 快速拖动/点击会瞬间塞进几十上百次定位，实测音频线程单帧长达 12.8 秒。
+        /// 这里不设任何延迟：没有在飞行中的 seek 就立即发出；已有在飞行中的，只更新目标，
+        /// 等它完成后由 <see cref="seekAndReleaseAsync"/> 的收尾接着发最新目标。
+        /// 于是音频以 BASS 能处理的最快速度跟手，来不及处理的中间位置被丢弃（不堆积、不卡死）。
+        /// </summary>
+        private void requestTrackSeek(double timeMs)
+        {
+            double? immediate = null;
+
+            lock (seekLock)
+            {
+                seekTargetMs = timeMs;
+                hasSeekTarget = true;
+
+                if (!seekInFlight)
+                {
+                    immediate = timeMs;
+                    hasSeekTarget = false;
+                    seekInFlight = true;
+                }
+            }
+
+            if (immediate is { } target)
+                _ = seekAndReleaseAsync(target);
+        }
+
+        private async Task seekAndReleaseAsync(double target)
+        {
+            try
+            {
+                // SeekAsync 只把动作入队给音频线程（seekInternal → ChannelSetPosition 在那边跑），
+                // await 只是串行化：保证同时只有一个定位在音频线程上执行。
+                if (currentTrack is { } track)
+                    await track.SeekAsync(target);
+            }
+            catch (Exception e)
+            {
+                AppLog.Player.Add($"定位失败：{e.Message}", LogLevel.Error, e);
+            }
+            finally
+            {
+                double? next = null;
+
+                lock (seekLock)
+                {
+                    seekInFlight = false;
+
+                    // 拖动/连点期间登记的中间位置已被合并，这里只取最新的那个接着发。
+                    if (hasSeekTarget)
+                    {
+                        next = seekTargetMs;
+                        hasSeekTarget = false;
+                        seekInFlight = true;
+                    }
+                }
+
+                if (next is { } t)
+                    _ = seekAndReleaseAsync(t);
+            }
+        }
+
+        /// <summary>丢弃尚未发出的定位目标（切歌/释放时调用，避免把旧歌的位置 seek 到新歌）。</summary>
+        private void clearPendingSeek()
+        {
+            lock (seekLock)
+                hasSeekTarget = false;
+        }
+
+        private double clampSeek(double timeMs)
         {
             // Trial clips are only playable up to their decoded length; the bar itself still spans
             // the full song, so a drag past the clip end snaps back into the valid region.
@@ -453,11 +700,7 @@ namespace OsuPlayer.Game.Music
             if (previewLimitMs > 0)
                 max = Math.Max(0, max - preview_seek_guard_ms);
 
-            timeMs = Math.Clamp(timeMs, 0, Math.Max(0, max));
-
-            endHandled = false;
-            currentTrack?.Seek(timeMs);
-            CurrentTimeMs.Value = timeMs;
+            return Math.Clamp(timeMs, 0, Math.Max(0, max));
         }
 
         // -------- 淡入淡出 --------
@@ -689,6 +932,9 @@ namespace OsuPlayer.Game.Music
                     ["quality"] = Quality.Value,
                     ["tempo"] = Tempo.Value,
                     ["repeat"] = Repeat.Value.ToString(),
+                    ["bpmMode"] = BpmMode.Value.ToString(),
+                    ["debugMode"] = DebugMode.Value,
+                    ["showFps"] = ShowFps.Value,
                     ["liked"] = new JArray(Liked.Select(toJson)),
                     ["history"] = new JArray(History.Select(toJson)),
                     ["local"] = new JArray(LocalTracks.Select(toJson)),
@@ -757,11 +1003,12 @@ namespace OsuPlayer.Game.Music
                 Volume.Value = (float)(state["volume"]?.Value<double>() ?? Volume.Value);
                 Tempo.Value = state["tempo"]?.Value<double>() ?? Tempo.Value;
                 Repeat.Value = Enum.TryParse(state["repeat"]?.ToString(), out RepeatMode repeat) ? repeat : Repeat.Value;
+                BpmMode.Value = Enum.TryParse(state["bpmMode"]?.ToString(), out BpmDetectionMode bpmMode) ? bpmMode : BpmMode.Value;
+                DebugMode.Value = state["debugMode"]?.Value<bool>() ?? DebugMode.Value;
+                ShowFps.Value = state["showFps"]?.Value<bool>() ?? ShowFps.Value;
 
                 string quality = state["quality"]?.ToString() ?? Quality.Value;
                 Quality.Value = quality;
-                qualityIndex = Math.Max(0, Array.IndexOf(quality_cycle, quality));
-                tempoIndex = Math.Max(0, Array.IndexOf(tempo_cycle, Tempo.Value));
 
                 foreach (JToken liked in state["liked"] ?? new JArray())
                 {
@@ -1004,44 +1251,250 @@ namespace OsuPlayer.Game.Music
             AppLog.Player.Add($"循环模式切换为：{Repeat.Value}", LogLevel.Important);
         }
 
-        public async Task CycleQualityAsync()
+        /// <summary>切换音质并按新音质重新解析/加载当前曲目（音质变了必须换一个流）。</summary>
+        public async Task SetQualityAsync(string quality)
         {
-            qualityIndex = (qualityIndex + 1) % quality_cycle.Length;
-            Quality.Value = quality_cycle[qualityIndex];
-            AppLog.Player.Add($"音质切换为：{Quality.Value}，重新加载当前曲目", LogLevel.Important);
+            if (string.Equals(Quality.Value, quality, StringComparison.Ordinal))
+                return;
+
+            Quality.Value = quality;
+            AppLog.Player.Add($"音质切换为：{quality}，重新加载当前曲目", LogLevel.Important);
+
             if (currentIndex >= 0)
                 await playCurrentAsync().ConfigureAwait(false);
         }
 
-        public void CycleTempo()
+        /// <summary>设置倍速。滑块拖动时直接改 <see cref="Tempo"/> 实时生效，这里只在拖拽结束时记一条日志。</summary>
+        public void SetTempo(double tempo)
         {
-            tempoIndex = (tempoIndex + 1) % tempo_cycle.Length;
-            Tempo.Value = tempo_cycle[tempoIndex];
-            AppLog.Player.Add($"倍速切换为：{Tempo.Value:0.##}x", LogLevel.Important);
+            Tempo.Value = tempo;
+            AppLog.Player.Add($"倍速切换为：{Tempo.Value:0.00}x", LogLevel.Important);
         }
 
-        public void ToggleLike()
+        /// <summary>
+        /// 「喜欢」列表的来源：登录后读的是酷狗账号里的「我喜欢」歌单，未登录时退回本地列表。
+        /// 返回同步后的完整列表；未登录 / 歌单不可用时返回 null（调用方应改用本地列表）。
+        /// </summary>
+        /// <param name="force">true 时忽略已缓存的歌单 id 重新拉取。</param>
+        /// <param name="onUpdated">同步成功后于更新线程回调刷新的列表，供已打开的面板重绘。</param>
+        public async Task<IReadOnlyList<SongInfo>?> RefreshLikedAsync(bool force = false,
+            Action<IReadOnlyList<SongInfo>>? onUpdated = null)
+        {
+            if (!api.Session.IsLoggedIn)
+            {
+                likedListId = 0;
+                return null;
+            }
+
+            // 已解析过就直接用内存里的列表（调用方在更新线程，可安全读取）。
+            if (likedListId != 0 && !force)
+                return Liked.ToList();
+
+            if (riskControlActive())
+            {
+                AppLog.Player.Add("风控冷却期内跳过账号「我喜欢」同步，沿用当前列表", LogLevel.Important);
+                return likedListId != 0 ? Liked.ToList() : null;
+            }
+
+            // 并发调用合并：打开面板和点喜欢可能同时进来，没必要各打一次十几秒的请求。
+            if (likedSyncInFlight is { } running)
+                return await running.ConfigureAwait(true);
+
+            if (force && DateTime.UtcNow - likedSyncedAt < liked_force_min_interval)
+            {
+                AppLog.Player.Add($"距上次同步不足 {liked_force_min_interval.TotalMinutes:0} 分钟，跳过强制刷新");
+                return likedListId != 0 ? Liked.ToList() : null;
+            }
+
+            Task<IReadOnlyList<SongInfo>?> sync = syncLikedAsync(onUpdated);
+            likedSyncInFlight = sync;
+
+            try
+            {
+                return await sync.ConfigureAwait(true);
+            }
+            finally
+            {
+                likedSyncInFlight = null;
+                likedSyncedAt = DateTime.UtcNow;
+            }
+        }
+
+        private async Task<IReadOnlyList<SongInfo>?> syncLikedAsync(Action<IReadOnlyList<SongInfo>>? onUpdated)
+        {
+            try
+            {
+                long listId = await resolveLikedListIdAsync().ConfigureAwait(false);
+
+                if (listId == 0)
+                    return null;
+
+                likedListId = listId;
+
+                JObject tracks = await AppLog.Player.TimeAsync("同步账号「我喜欢」",
+                    () => api.GetUserPlaylistTracksAsync(listId, 1, liked_page_size),
+                    r => $"，{countOf(r)} 首").ConfigureAwait(false);
+
+                IReadOnlyList<SongInfo> songs = KuGouMapper.UserPlaylistTracks(tracks);
+
+                // 酷狗「我喜欢」按加入时间从旧到新返回；界面统一按从新到旧展示。
+                songs = songs.Reverse().ToList();
+
+                AppLog.Player.Add($"账号「我喜欢」共 {songs.Count} 首", LogLevel.Important);
+
+                Schedule(() =>
+                {
+                    Liked.Clear();
+
+                    foreach (SongInfo song in songs)
+                        Liked.Add(song);
+
+                    onUpdated?.Invoke(songs);
+                });
+
+                return songs;
+            }
+            catch (Exception e)
+            {
+                AppLog.Player.Add($"同步账号「我喜欢」失败：{e.Message}", LogLevel.Error, e);
+                return null;
+            }
+        }
+
+        /// <summary>在账号的歌单里找「我喜欢」：优先名字含「喜欢」，其次是标记为默认收藏的歌单。</summary>
+        private async Task<long> resolveLikedListIdAsync()
+        {
+            JObject response = await AppLog.Player.TimeAsync("查询账号歌单",
+                () => api.GetUserPlaylistsAsync(1, 100),
+                r => $"，{countOf(r)} 个").ConfigureAwait(false);
+
+            IReadOnlyList<UserPlaylistInfo> playlists = KuGouMapper.UserPlaylists(response);
+
+            UserPlaylistInfo? liked = playlists.FirstOrDefault(p => p.Name.Contains("喜欢", StringComparison.Ordinal))
+                                      ?? playlists.FirstOrDefault(p => p.IsDefault);
+
+            if (liked is null)
+                AppLog.Player.Add($"账号里没有「我喜欢」歌单（共 {playlists.Count} 个歌单）", LogLevel.Important);
+
+            return liked?.ListId ?? 0;
+        }
+
+        /// <summary>歌单接口的曲目数组长度（仅用于日志）。</summary>
+        private static int countOf(JObject response)
+            => ((JArray?)response["data"]?["info"] ?? (JArray?)response["data"]?["songs"])?.Count ?? 0;
+
+        /// <summary>收藏状态（登录后即账号歌单里的状态）。</summary>
+        public bool IsLiked(SongInfo song) => findLiked(song) is not null;
+
+        /// <summary>按 hash 匹配（来自不同接口的同一首歌，专辑/文件 id 可能不同，不能用整条 record 比较）。</summary>
+        private SongInfo? findLiked(SongInfo song)
+            => song.Hash.Length == 0
+                ? null
+                : Liked.FirstOrDefault(s => string.Equals(s.Hash, song.Hash, StringComparison.OrdinalIgnoreCase));
+
+        public async Task ToggleLikeAsync()
         {
             SongInfo? song = CurrentSong.Value;
+
             if (song is null)
             {
                 AppLog.Player.Add("喜欢/取消喜欢：无当前曲目，忽略");
                 return;
             }
 
-            if (Liked.Contains(song))
+            // 未登录或本地导入的曲目没有酷狗 hash：只能记在本地。
+            if (!api.Session.IsLoggedIn || song.IsLocal || song.Hash.Length == 0)
             {
-                Liked.Remove(song);
+                toggleLocalLike(song);
+                return;
+            }
+
+            IReadOnlyList<SongInfo>? account = await RefreshLikedAsync().ConfigureAwait(true);
+
+            if (account is null || likedListId == 0)
+            {
+                AppLog.Player.Add("账号「我喜欢」歌单不可用，本次收藏只记在本地", LogLevel.Important);
+                toggleLocalLike(song);
+                return;
+            }
+
+            SongInfo? existing = account.FirstOrDefault(s => string.Equals(s.Hash, song.Hash, StringComparison.OrdinalIgnoreCase));
+
+            try
+            {
+                if (existing is not null)
+                {
+                    SongInfo toRemove = existing;
+
+                    JObject response = await AppLog.Player.TimeAsync("账号「我喜欢」删除曲目",
+                        () => api.DeleteSongsFromPlaylistAsync(likedListId, new[] { fileIdOf(toRemove) }),
+                        failureText).ConfigureAwait(false);
+
+                    if (!isPlaylistOk(response))
+                    {
+                        AppLog.Player.Add($"取消喜欢失败：{failureText(response)}", LogLevel.Error);
+                        return;
+                    }
+
+                    Schedule(() => Liked.Remove(toRemove));
+                    AppLog.Player.Add($"取消喜欢（账号歌单）：{describe(song)}", LogLevel.Important);
+                }
+                else
+                {
+                    JObject response = await AppLog.Player.TimeAsync("账号「我喜欢」添加曲目",
+                        () => api.AddSongToPlaylistAsync(likedListId, song.Name, song.Hash, song.AlbumId, song.AlbumAudioId),
+                        failureText).ConfigureAwait(false);
+
+                    if (!isPlaylistOk(response))
+                    {
+                        AppLog.Player.Add($"添加喜欢失败：{failureText(response)}", LogLevel.Error);
+                        return;
+                    }
+
+                    Schedule(() =>
+                    {
+                        if (findLiked(song) is null)
+                            Liked.Add(song);
+                    });
+
+                    AppLog.Player.Add($"添加喜欢（账号歌单）：{describe(song)}", LogLevel.Important);
+                }
+            }
+            catch (Exception e)
+            {
+                AppLog.Player.Add($"喜欢操作失败：{e.Message}", LogLevel.Error, e);
+            }
+        }
+
+        /// <summary>歌单接口成功时 status=1；部分响应只有 error_code/errcode=0。</summary>
+        private static bool isPlaylistOk(JObject response)
+        {
+            if (response["status"] is not null)
+                return response["status"]!.Value<int>() == 1;
+
+            return (response["error_code"] ?? response["errcode"])?.Value<int>() == 0;
+        }
+
+        /// <summary>删歌用 fileid；接口没给时回落到 album_audio_id（参考实现同样回落到 mixSongId）。</summary>
+        private static long fileIdOf(SongInfo song) => song.FileId != 0 ? song.FileId : song.AlbumAudioId;
+
+        /// <summary>未登录（或本地曲目）时的纯本地收藏。</summary>
+        private void toggleLocalLike(SongInfo song)
+        {
+            SongInfo? existing = findLiked(song);
+
+            if (existing is not null)
+            {
+                Liked.Remove(existing);
                 AppLog.Player.Add($"取消喜欢：{describe(song)}");
             }
             else
             {
-                Liked.Add(song);
+                // 与账号「我喜欢」一致：最新的排最前。
+                Liked.Insert(0, song);
                 AppLog.Player.Add($"添加喜欢：{describe(song)}");
             }
         }
-
-        public bool IsLiked(SongInfo song) => Liked.Contains(song);
 
         // -------- 本地音乐 --------
 
@@ -1117,6 +1570,8 @@ namespace OsuPlayer.Game.Music
             CurrentSong.Value = song;
             CurrentCover.Value = song.CoverUrl ?? string.Empty;
             LyricsReset();
+            // 评论同样按曲目隔离：不清空的话，新歌加载期间评论区还挂着上一首的评论。
+            CommentsReset();
             StatusText.Value = "正在加载…";
             endHandled = false;
             CurrentStreamUrl = null;
@@ -1134,13 +1589,21 @@ namespace OsuPlayer.Game.Music
             }
             else
             {
-                if (await resolveOnlineUrlAsync(song).ConfigureAwait(false) is not { } resolved)
+                if (await resolveOnlineUrlAsync(song, serial).ConfigureAwait(false) is not { } resolved)
                 {
                     abortPlayback(serial, song, "解析播放地址失败");
                     return;
                 }
 
                 (url, preview) = resolved;
+            }
+
+            // 被更新的请求取代后不要再改共享状态：CurrentStreamUrl 会被节拍分析当成「当前曲目」的
+            // 地址，写错了就是给新歌分析上一首的音频（音轨本身的丢弃守卫在下面的 Schedule 里）。
+            if (serial != playSerial)
+            {
+                AppLog.Player.Add($"丢弃过期的解析结果：{describe(song)}");
+                return;
             }
 
             CurrentStreamUrl = url;
@@ -1184,6 +1647,9 @@ namespace OsuPlayer.Game.Music
 
                 currentTrack = track;
                 currentTrackHash = song.Hash;
+                holdActive = false;
+                holdSubmitted = false;
+                clearPendingSeek();
                 track.Tempo.Value = Tempo.Value;
 
                 // 试听片段：进度条仍展示整首歌长度，但只允许拖到片段实际解码长度。
@@ -1278,6 +1744,9 @@ namespace OsuPlayer.Game.Music
                 Track? stale = currentTrack;
                 currentTrack = null;
                 currentTrackHash = null;
+                holdActive = false;
+                holdSubmitted = false;
+                clearPendingSeek();
 
                 if (stale is not null)
                 {
@@ -1305,8 +1774,13 @@ namespace OsuPlayer.Game.Music
         /// full stream is refused. Returns null when nothing is playable - the status text and logs are
         /// already written in that case.
         /// </summary>
-        private async Task<(string Url, bool Preview)?> resolveOnlineUrlAsync(SongInfo song)
+        private async Task<(string Url, bool Preview)?> resolveOnlineUrlAsync(SongInfo song, long serial)
         {
+            // 选歌请求可能在本方法的网络等待期间被更新的请求取代（用户又点了别的歌）。
+            // 取代发生后本次续段绝不能再写任何共享状态：否则新歌会拿到上一首的封面、状态文案
+            // 甚至播放态 —— 也就是"播放一首歌却继承了上一首的部分条目"。所有共享写入前都要过这个判断。
+            bool stale() => serial != playSerial;
+
             JObject response;
             string? prefetched = cachedUrl(song);
 
@@ -1323,10 +1797,15 @@ namespace OsuPlayer.Game.Music
             {
                 // 风控未解除前不再发请求：继续点歌只会让网关把整个会话继续挂在验证事件上。
                 AppLog.Player.Add($"跳过线上解析（{blocked}）：{describe(song)}");
-                StatusText.Value = blocked;
-                IsPlaying.Value = false;
-                PlayGeneration.Value++;
-                endHandled = true;
+
+                if (!stale())
+                {
+                    StatusText.Value = blocked;
+                    IsPlaying.Value = false;
+                    PlayGeneration.Value++;
+                    endHandled = true;
+                }
+
                 return null;
             }
             else
@@ -1340,10 +1819,15 @@ namespace OsuPlayer.Game.Music
                 catch (Exception e)
                 {
                     AppLog.Player.Add($"播放地址获取失败：{describe(song)}：{e.Message}", LogLevel.Error, e);
-                    StatusText.Value = $"播放地址获取失败：{e.Message}";
-                    IsPlaying.Value = false;
-                    // Keep the completed previous track from retriggering auto-advance every frame.
-                    endHandled = true;
+
+                    if (!stale())
+                    {
+                        StatusText.Value = $"播放地址获取失败：{e.Message}";
+                        IsPlaying.Value = false;
+                        // Keep the completed previous track from retriggering auto-advance every frame.
+                        endHandled = true;
+                    }
+
                     return null;
                 }
             }
@@ -1376,6 +1860,10 @@ namespace OsuPlayer.Game.Music
             var urls = response["url"] as JArray;
             if (urls is not { Count: > 0 })
             {
+                // 已被更新的请求取代：下面整段都是「上一首」的失败 / 会员提示，不能再写进新歌的状态。
+                if (stale())
+                    return null;
+
                 if (verificationRequired is { } required)
                 {
                     // 网关要求人机验证（errcode 20028）：这与会员/版权无关，再重试也是同样的结果。
@@ -1406,9 +1894,10 @@ namespace OsuPlayer.Game.Music
             }
 
             // The hi-res cover rides along with the play response; only the online path has one.
+            // 过期请求不得覆盖封面：这是"新歌显示上一首封面"最直观的来源。
             string? cover = response["trans_param"]?["union_cover"]?.ToString();
 
-            if (!string.IsNullOrEmpty(cover))
+            if (!stale() && !string.IsNullOrEmpty(cover))
                 CurrentCover.Value = cover.Replace("{size}", "240");
 
             string resolvedUrl = urls[0]!.ToString();
@@ -1556,10 +2045,14 @@ namespace OsuPlayer.Game.Music
         private bool verificationRequiredHasBeenRaised(JObject response)
         {
             bool challenged = response["errcode"]?.Value<long>() == 20028
+                              || response["error_code"]?.Value<long>() == 20028
                               || (response["error"]?.ToString()?.Contains("需要验证", StringComparison.Ordinal) ?? false);
 
             if (!challenged)
                 return false;
+
+            // 风控一旦触发，后续请求会被拖到十几到二十秒：先记冷却，让自动流程停止继续打请求。
+            riskControlUntil = DateTime.UtcNow + risk_control_delay;
 
             if (verificationRequired is not null)
                 return true;
@@ -1648,17 +2141,30 @@ namespace OsuPlayer.Game.Music
 
                 if (submitted["status"]?.Value<int>() != 1)
                 {
-                    AppLog.Player.Add($"安全验证未通过：{failureText(submitted)}", LogLevel.Error);
+                    // 验证接口只会给一个笼统的 code（例如 20010），原始响应必须留下，否则事后无法判断原因。
+                    AppLog.Player.Add($"安全验证未通过：{failureText(submitted)}，原始响应 {submitted.ToString(Formatting.None)}",
+                        LogLevel.Error);
                     abortVerification();
                     notifications?.Post(new SimpleNotification { Text = "安全验证未通过，稍后请重试", IsImportant = true });
                     return;
                 }
 
                 verificationRequired = null;
-                AppLog.Player.Add("安全验证通过，恢复正常播放", LogLevel.Important);
+                verificationRetryAfter = default;
+
+                // 验证通过就等于风控解除：立刻结束冷却，否则后续操作还会被自己挡住。
+                riskControlUntil = default;
+                AppLog.Player.Add("安全验证通过，风控已解除，恢复正常播放", LogLevel.Important);
                 notifications?.Post(new SimpleNotification { Text = "安全验证已通过" });
 
-                if (CurrentSong.Value is { } song)
+                // 重试那次触发验证的操作（例如被 20028 拦下的会员领取）。
+                if (pendingVerificationRetry is { } retry)
+                {
+                    pendingVerificationRetry = null;
+                    AppLog.Player.Add("验证完成，重试刚才被风控拦截的操作", LogLevel.Important);
+                    _ = retry();
+                }
+                else if (CurrentSong.Value is { } song)
                 {
                     AppLog.Player.Add($"验证完成，重新解析当前曲目：{describe(song)}", LogLevel.Important);
                     resumeOnStartMs = CurrentTimeMs.Value;
@@ -1676,15 +2182,65 @@ namespace OsuPlayer.Game.Music
         private void abortVerification()
         {
             verificationRequired = null;
+            pendingVerificationRetry = null;
             verificationRetryAfter = DateTime.UtcNow + verification_retry_delay;
         }
+
+        /// <summary>
+        /// 主动把用户送去浏览器完成安全验证（账号面板在风控期间点「领取/升级」时调用）。
+        /// 20028 只能靠完成人机验证解除，冷却期间静默跳过只会让人以为功能坏了。
+        /// </summary>
+        public void RequestBrowserVerification()
+        {
+            if (!api.Session.IsLoggedIn)
+                return;
+
+            if (verificationRequired is not null)
+            {
+                AppLog.Player.Add("安全验证流程已在进行中（浏览器验证页已打开）");
+                return;
+            }
+
+            if (DateTime.UtcNow < verificationRetryAfter)
+            {
+                AppLog.Player.Add("上一次安全验证被取消或超时，请稍后再试");
+                return;
+            }
+
+            string eventId = api.LastSsaCode ?? string.Empty;
+
+            if (string.IsNullOrEmpty(eventId))
+            {
+                AppLog.Player.Add("暂无可用的验证事件（还在等网关下发 20028），稍后重试即可发起验证", LogLevel.Important);
+                notifications?.Post(new SimpleNotification { Text = "暂无可用的验证事件，稍后再试", IsImportant = true });
+                return;
+            }
+
+            verificationRequired = "酷狗要求安全验证，请在浏览器弹出的验证页完成验证";
+            AppLog.Player.Add("按要求转入浏览器验证", LogLevel.Important);
+
+            notifications?.Post(new SimpleNotification
+            {
+                Text = "已打开浏览器验证页，完成后会自动继续",
+                IsImportant = true,
+            });
+
+            _ = beginVerificationAsync(eventId);
+        }
+
+        /// <summary>是否处于风控冷却期（20028 之后）：期间不再自动打易触发风控的接口。</summary>
+        private bool riskControlActive() => DateTime.UtcNow < riskControlUntil;
+
+        /// <summary>风控期间给账号面板/状态栏的统一文案。</summary>
+        private static string riskControlText()
+            => "酷狗要求安全验证（20028）：已转入浏览器验证，完成后会自动重试";
 
         /// <summary>把网关的业务错误整理成 “code message”，便于日志与状态栏直接展示。</summary>
         private static string failureText(JObject response)
         {
-            string code = (response["errcode"] ?? response["error_code"])?.ToString() ?? "?";
-            string message = (response["error"] ?? response["errmsg"] ?? response["msg"] ?? response["message"]
-                              ?? response["error_msg"])?.ToString()
+            string code = (response["errcode"] ?? response["error_code"] ?? response["err_code"])?.ToString() ?? "?";
+            string message = (response["error"] ?? response["errmsg"] ?? response["err_msg"] ?? response["errMsg"]
+                              ?? response["msg"] ?? response["message"] ?? response["error_msg"])?.ToString()
                              ?? "未知错误";
             return $"{code} {message}";
         }
@@ -1709,6 +2265,146 @@ namespace OsuPlayer.Game.Music
 
         public BindableInt ActiveLyricIndex { get; } = new(-1);
         private int activeLyricIndex = -1;
+
+        // -------- 评论（只读） --------
+
+        /// <summary>当前曲目的评论。切歌即清空。接口是只读的，这里不提供发表/点赞/回复。</summary>
+        public BindableList<SongComment> Comments { get; } = [];
+
+        /// <summary>评论总数（接口返回的 count）。</summary>
+        public BindableInt CommentTotal { get; } = new();
+
+        /// <summary>评论区状态文案：加载中 / 失败 / 不支持（本地曲目）。空串表示可以正常展示列表。</summary>
+        public Bindable<string> CommentStatus { get; } = new(string.Empty);
+
+        private int commentPage;
+        private bool commentsLoading;
+        private string? commentsForHash;
+
+        private void CommentsReset()
+        {
+            Comments.Clear();
+            CommentTotal.Value = 0;
+            CommentStatus.Value = string.Empty;
+            commentPage = 0;
+            commentsLoading = false;
+            commentsForHash = null;
+        }
+
+        /// <summary>读取一页评论并解析。UI 与诊断入口共用同一实现，避免两份口径。</summary>
+        public async Task<(int Total, List<SongComment> Items)> FetchCommentsAsync(SongInfo song, int page,
+            int pageSize = 20)
+        {
+            JObject response = await api.GetSongCommentsAsync(song.Hash, song.AlbumAudioId, song.Name, page, pageSize)
+                .ConfigureAwait(false);
+
+            int total = response["count"]?.Value<int>() ?? 0;
+            var items = new List<SongComment>();
+
+            foreach (JToken item in response["list"] as JArray ?? [])
+            {
+                SongComment? comment = parseComment(item);
+
+                if (comment is not null)
+                    items.Add(comment);
+            }
+
+            return (total, items);
+        }
+
+        /// <summary>
+        /// 拉取（<paramref name="append"/> = false）或追加下一页评论。
+        /// 结果经 <c>Schedule</c> 写回并校验 hash：切歌后到达的旧请求结果一律丢弃
+        /// （不然上一首的评论会显示在新歌下面）。
+        /// </summary>
+        public async Task LoadCommentsAsync(SongInfo song, bool append = false)
+        {
+            if (song.IsLocal)
+            {
+                CommentStatus.Value = "本地导入的曲目没有在线评论。";
+                return;
+            }
+
+            if (song.AlbumAudioId == 0)
+            {
+                CommentStatus.Value = "这首歌缺少评论标识（mixsongid），无法读取评论。";
+                return;
+            }
+
+            if (commentsLoading)
+                return;
+
+            commentsLoading = true;
+            int page = append ? commentPage + 1 : 1;
+
+            if (!append)
+            {
+                commentsForHash = song.Hash;
+
+                Schedule(() =>
+                {
+                    Comments.Clear();
+                    CommentTotal.Value = 0;
+                    CommentStatus.Value = "评论加载中…";
+                });
+            }
+
+            try
+            {
+                (int total, List<SongComment> items) = await FetchCommentsAsync(song, page).ConfigureAwait(false);
+
+                AppLog.Player.Add($"评论加载完成：{describe(song)}，第 {page} 页 {items.Count} 条 / 共 {total} 条");
+
+                Schedule(() =>
+                {
+                    if (commentsForHash != song.Hash)
+                        return;
+
+                    commentPage = page;
+                    CommentTotal.Value = total;
+                    Comments.AddRange(items);
+
+                    if (items.Count == 0)
+                        CommentStatus.Value = CommentTotal.Value == 0 ? "这首歌还没有评论。" : "没有更多评论了。";
+                    else
+                        CommentStatus.Value = string.Empty;
+                });
+            }
+            catch (Exception e)
+            {
+                AppLog.Player.Add($"评论加载失败：{describe(song)}：{e.Message}", LogLevel.Error, e);
+
+                Schedule(() =>
+                {
+                    if (commentsForHash == song.Hash)
+                        CommentStatus.Value = $"评论加载失败：{e.Message}";
+                });
+            }
+            finally
+            {
+                commentsLoading = false;
+            }
+        }
+
+        /// <summary>把接口的一条评论映射成模型；没有正文的条目（纯图片/被过滤）直接丢弃。</summary>
+        private static SongComment? parseComment(JToken item)
+        {
+            string? content = item["content"]?.ToString();
+
+            if (string.IsNullOrEmpty(content))
+                return null;
+
+            return new SongComment(
+                item["id"]?.Value<long>() ?? 0,
+                item["user_name"]?.ToString() ?? "匿名用户",
+                content,
+                item["like"]?["likenum"]?.Value<int>() ?? 0,
+                item["addtime"]?.ToString() ?? string.Empty,
+                item["user_pic"]?.ToString(),
+                item["location"]?.ToString(),
+                item["puser"]?.ToString(),
+                item["pcontent"]?.ToString());
+        }
 
         private async Task loadLyricsAsync(SongInfo song)
         {
@@ -1818,7 +2514,16 @@ namespace OsuPlayer.Game.Music
             else if (track.Length > 0)
                 LengthMs.Value = track.Length;
 
-            CurrentTimeMs.Value = track.CurrentTime;
+            double actualMs = track.CurrentTime;
+
+            // 界面停留：拖动中一直停在用户拖到的位置（此时不 seek 音轨，不做落地判定）；
+            // 松手/点击提交后，停在目标位置直到音轨真正到位 —— 否则会被"旧的播放位置"拽回去。
+            if (holdActive && holdSubmitted
+                && (Math.Abs(actualMs - holdDisplayMs) <= seek_settle_tolerance_ms
+                    || Clock.CurrentTime - holdSubmittedAtMs > seek_hold_timeout_ms))
+                holdActive = false;
+
+            CurrentTimeMs.Value = holdActive ? holdDisplayMs : actualMs;
 
             // Active lyric line.
             int found = -1;
@@ -1929,6 +2634,7 @@ namespace OsuPlayer.Game.Music
                 LoggedIn.Value = true;
                 AppLog.Player.Add($"扫码登录成功，用户 ID：{LoginUserId}", LogLevel.Important);
                 refreshMemberState();
+                _ = RefreshLikedAsync(force: true); // 登录后「喜欢」改为读账号歌单
                 saveState(); // 登录凭证立即落盘，重启后仍然保持登录
             }
 
@@ -1961,6 +2667,21 @@ namespace OsuPlayer.Game.Music
             if (!api.Session.IsLoggedIn)
                 return;
 
+            // 启动恢复登录与扫码登录成功都会走到这里，同一次会话只自动跑一遍。
+            if (vipClaimAttempted)
+            {
+                AppLog.Player.Add("自动领取本次会话已跑过，跳过");
+                return;
+            }
+
+            vipClaimAttempted = true;
+
+            if (riskControlActive())
+            {
+                AppLog.Player.Add("处于风控冷却期，跳过自动领取与升级", LogLevel.Important);
+                return;
+            }
+
             // 领取日按北京时间计算（接口要求的 receive_day 即北京时间日期）。
             string today = beijingToday();
 
@@ -1981,6 +2702,10 @@ namespace OsuPlayer.Game.Music
                 await UpgradeConceptVipAsync().ConfigureAwait(false);
             }
 
+            // 领取过程触发风控时不必再刷新会员状态（这一步也是要打接口的）。
+            if (riskControlActive())
+                return;
+
             await fetchConceptVipAsync().ConfigureAwait(false);
             RetryCurrentTrackAfterVipChange();
         }
@@ -1991,6 +2716,15 @@ namespace OsuPlayer.Game.Music
             if (!api.Session.IsLoggedIn)
                 return "请先登录";
 
+            if (riskControlActive())
+            {
+                // 冷却不是终点：把用户送去浏览器验证，并在验证通过后自动重试这次领取。
+                AppLog.Player.Add("畅听会员领取处于风控冷却期，转入浏览器验证", LogLevel.Important);
+                pendingVerificationRetry = () => ClaimDailyListenVipAsync();
+                RequestBrowserVerification();
+                return riskControlText();
+            }
+
             string today = beijingToday();
 
             try
@@ -1998,6 +2732,14 @@ namespace OsuPlayer.Game.Music
                 JObject claim = await AppLog.Player.TimeAsync("领取每日畅听会员",
                     () => api.ClaimDailyListenVipAsync(today),
                     r => $"，status={r["status"]}，{resultText(r)}").ConfigureAwait(false);
+
+                // 20028 是风控/人机验证，不是普通业务失败：转入浏览器验证，验证通过后自动重试领取。
+                if (verificationRequiredHasBeenRaised(claim))
+                {
+                    AppLog.Player.Add($"领取畅听会员触发风控：{failureText(claim)}", LogLevel.Important);
+                    pendingVerificationRetry = () => ClaimDailyListenVipAsync();
+                    return riskControlText();
+                }
 
                 // 成功：status=1；已领取：msg 里带「已领取」。
                 bool claimed = claim["status"]?.Value<int>() == 1
@@ -2023,11 +2765,26 @@ namespace OsuPlayer.Game.Music
             if (!api.Session.IsLoggedIn)
                 return "请先登录";
 
+            if (riskControlActive())
+            {
+                AppLog.Player.Add("概念会员升级处于风控冷却期，转入浏览器验证", LogLevel.Important);
+                pendingVerificationRetry = () => UpgradeConceptVipAsync();
+                RequestBrowserVerification();
+                return riskControlText();
+            }
+
             try
             {
                 JObject upgrade = await AppLog.Player.TimeAsync("升级概念版会员",
                     () => api.UpgradeConceptVipAsync(),
                     r => $"，status={r["status"]}，{resultText(r)}").ConfigureAwait(false);
+
+                if (verificationRequiredHasBeenRaised(upgrade))
+                {
+                    AppLog.Player.Add($"升级概念会员触发风控：{failureText(upgrade)}", LogLevel.Important);
+                    pendingVerificationRetry = () => UpgradeConceptVipAsync();
+                    return riskControlText();
+                }
 
                 // 成功：status=1；297002 表示今日已升级；msg 里带「已升级」同理。
                 bool upgraded = upgrade["status"]?.Value<int>() == 1

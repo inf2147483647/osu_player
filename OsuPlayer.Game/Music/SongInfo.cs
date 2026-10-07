@@ -40,6 +40,15 @@ namespace OsuPlayer.Game.Music
         /// </summary>
         public BeatmapTiming? Timing { get; init; }
 
+        /// <summary>
+        /// 酷狗歌单里的文件 ID（fileid / audio_id）。从歌单删歌时接口要求传它；缺失时回落到
+        /// <see cref="AlbumAudioId"/>（参考实现同样是 song.fileId ?? song.mixSongId）。
+        /// </summary>
+        public long FileId { get; init; }
+
+        /// <summary>专辑 ID。加入歌单的 payload 需要它，缺失时按 0 发送（参考实现同样容错）。</summary>
+        public long AlbumId { get; init; }
+
         public string DisplayText => $"{Name} · {Artist}";
 
         /// <summary>True for tracks imported from disk (see <see cref="LocalPath"/>) rather than KuGou.</summary>

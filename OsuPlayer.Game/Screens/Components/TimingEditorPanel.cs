@@ -297,6 +297,12 @@ namespace OsuPlayer.Game.Screens.Components
                                 // TimingSection：节拍器 → Offset → BPM → Tap/播放停止 → Time Signature。
                                 timingCard,
                                 offsetControl,
+                                new OsuTextFlowContainer(t => t.Font = t.Font.With(size: 13))
+                                {
+                                    RelativeSizeAxes = Axes.X,
+                                    AutoSizeAxes = Axes.Y,
+                                }.With(t => t.AddText("增大 offset 以抵消节拍器提前，减小 offset 以抵消节拍器滞后",
+                                    c => c.Colour = Color4.Gray)),
                                 bpmControl,
                                 new GridContainer
                                 {

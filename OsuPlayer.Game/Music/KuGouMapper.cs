@@ -5,6 +5,9 @@ namespace OsuPlayer.Game.Music
 {
     public sealed record PlaylistInfo(string CollectionId, string Name, string? CoverUrl, int SongCount);
 
+    /// <summary>账号下的一个自建歌单（含默认的「我喜欢」）。listid 是曲目接口与加删歌接口要用的 id。</summary>
+    public sealed record UserPlaylistInfo(long ListId, string Name, string GlobalCollectionId, bool IsDefault);
+
     /// <summary>
     /// Maps the slightly different shapes of each KuGou endpoint into the player's own models.
     /// Field names were verified against live responses on 2026-10; fallbacks cover FM/playlist variants.
@@ -99,6 +102,114 @@ namespace OsuPlayer.Game.Music
                 Fee = fee(s),
             })
                 .Where(x => !string.IsNullOrEmpty(x.Hash)).ToList() ?? [];
+        }
+
+        /// <summary>
+        /// 账号自建歌单列表（含默认「我喜欢」）。POST /v7/get_all_list → data.info[]。
+        /// </summary>
+        public static IReadOnlyList<UserPlaylistInfo> UserPlaylists(JObject json)
+        {
+            var list = (JArray?)json["data"]?["info"] ?? (JArray?)json["data"]?["list"];
+
+            return list?.Select(p =>
+            {
+                long listId = num(p, "listid");
+                if (listId == 0)
+                    listId = num(p, "specialid");
+
+                string name = str(p, "name");
+                if (string.IsNullOrEmpty(name))
+                    name = str(p, "specialname");
+
+                return new UserPlaylistInfo(
+                    listId,
+                    name,
+                    p["global_collection_id"]?.ToString() ?? p["gid"]?.ToString() ?? string.Empty,
+                    num(p, "is_def") is 1 or 2 || num(p, "is_default") == 1);
+            }).Where(x => x.ListId != 0).ToList() ?? [];
+        }
+
+        /// <summary>
+        /// 账号歌单内的曲目。POST /v4/get_list_all_file_v3 → data.info[]（旧版为 data.songs[]）。
+        /// 与公开歌单不同，这里的曲目信息可能整块嵌在 audio_info 里；同时保留 fileid 供删歌使用。
+        /// </summary>
+        public static IReadOnlyList<SongInfo> UserPlaylistTracks(JObject json)
+        {
+            var list = (JArray?)json["data"]?["info"]
+                       ?? (JArray?)json["data"]?["songs"]
+                       ?? (JArray?)json["data"]?["list"]
+                       ?? (JArray?)json["data"];
+
+            return list?.Select(s =>
+            {
+                JToken audio = s["audio_info"] ?? s;
+
+                long albumAudioId = num(s, "album_audio_id");
+                if (albumAudioId == 0) albumAudioId = num(s, "mixsongid");
+                if (albumAudioId == 0) albumAudioId = num(audio, "album_audio_id");
+                if (albumAudioId == 0) albumAudioId = num(audio, "mixsongid");
+
+                long fileId = num(s, "fileid");
+                if (fileId == 0) fileId = num(s, "file_id");
+                if (fileId == 0) fileId = num(s, "audio_id");
+                if (fileId == 0) fileId = num(audio, "audio_id");
+
+                long albumId = num(s, "album_id");
+                if (albumId == 0) albumId = num(audio, "album_id");
+
+                string hash = str(s, "hash");
+                if (string.IsNullOrEmpty(hash)) hash = str(audio, "hash_128");
+                if (string.IsNullOrEmpty(hash)) hash = str(audio, "hash");
+
+                string name = str(s, "songname");
+                if (string.IsNullOrEmpty(name)) name = str(s, "name");
+                if (string.IsNullOrEmpty(name)) name = str(s, "audio_name");
+                if (string.IsNullOrEmpty(name)) name = str(audio, "songname");
+                if (string.IsNullOrEmpty(name)) name = str(audio, "name");
+
+                // audio_name / name 常是文件名（含扩展名）；用它兜底时会把 ".mp3" 带进歌名。
+                name = stripAudioExtension(name);
+
+                string artist = str(s, "singername");
+                if (string.IsNullOrEmpty(artist)) artist = str(s, "author_name");
+                if (string.IsNullOrEmpty(artist)) artist = str(audio, "author_name");
+
+                string album = s["albuminfo"]?["name"]?.ToString()
+                               ?? s["album_info"]?["name"]?.ToString()
+                               ?? str(s, "album_name");
+                if (string.IsNullOrEmpty(album)) album = str(audio, "album_name");
+
+                return new SongInfo(
+                    hash,
+                    name,
+                    artist,
+                    album,
+                    pickMs(s, "timelen", "duration", "timelength"),
+                    albumAudioId,
+                    cover(s, "cover") ?? cover(s, "imgurl"))
+                {
+                    Fee = fee(s),
+                    FileId = fileId,
+                    AlbumId = albumId,
+                };
+            }).Where(x => !string.IsNullOrEmpty(x.Hash)).ToList() ?? [];
+        }
+
+        private static readonly string[] audio_extensions =
+        [
+            ".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".wma", ".opus", ".ape", ".dsf", ".dff",
+        ];
+
+        /// <summary>去掉文件名式的后缀（酷狗的 audio_name 字段常是「歌名.mp3」）。</summary>
+        private static string stripAudioExtension(string name)
+        {
+            foreach (string extension in audio_extensions)
+            {
+                if (name.EndsWith(extension, StringComparison.OrdinalIgnoreCase))
+                    return name[..^extension.Length].Trim();
+            }
+
+            return name;
         }
 
         /// <summary>

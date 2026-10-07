@@ -1,4 +1,6 @@
 using osu.Framework.Allocation;
+using osu.Framework.Bindables;
+using osu.Framework.Configuration;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Cursor;
@@ -9,15 +11,18 @@ using osu.Framework.Input.Events;
 using osu.Framework.Localisation;
 using osu.Framework.Logging;
 using osu.Framework.Threading;
+using osu.Game.Configuration;
 using osu.Game.Graphics;
 using osu.Game.Graphics.Containers;
 using osu.Game.Graphics.UserInterface;
+using osu.Game.Graphics.UserInterfaceV2;
 using osu.Game.Input.Bindings;
 using osuTK;
 using osuTK.Graphics;
 using OsuPlayer.Game.Graphics;
 using OsuPlayer.Game.Logging;
 using OsuPlayer.Game.Music;
+using OsuPlayer.Game.Music.BeatSync.Onnx;
 using OsuPlayer.Game.Net;
 
 namespace OsuPlayer.Game.Screens.Components
@@ -30,6 +35,10 @@ namespace OsuPlayer.Game.Screens.Components
     {
         [Resolved]
         private MusicPlayer player { get; set; } = null!;
+
+        /// <summary>框架级设置（帧率上限等），搬自 FemboyTest 的「图形」分区。</summary>
+        [Resolved]
+        private FrameworkConfigManager frameworkConfig { get; set; } = null!;
 
         private const float panel_width = 400;
 
@@ -248,6 +257,9 @@ namespace OsuPlayer.Game.Screens.Components
         private void buildContent(PanelKind kind)
         {
             contentHost.Clear();
+            // 离开通知/评论面板时不再需要它们的刷新回调，避免面板换了还在重建旧内容。
+            detachNotificationRefresh();
+            detachCommentsRefresh();
 
             switch (kind)
             {
@@ -260,7 +272,7 @@ namespace OsuPlayer.Game.Screens.Components
                     break;
 
                 case PanelKind.Recommend:
-                    loadSongList(() => player.GetRecommendAsync());
+                    buildRecommend();
                     break;
 
                 case PanelKind.PersonalFm:
@@ -268,7 +280,13 @@ namespace OsuPlayer.Game.Screens.Components
                     break;
 
                 case PanelKind.Liked:
+                    // 先显示当前列表（未登录时就是本地收藏），再从账号「我喜欢」歌单同步一次。
                     showSongs(player.Liked.ToList());
+                    _ = player.RefreshLikedAsync(force: true, onUpdated: songs =>
+                    {
+                        if (currentKind == PanelKind.Liked)
+                            showSongs(songs);
+                    });
                     break;
 
                 case PanelKind.History:
@@ -291,13 +309,242 @@ namespace OsuPlayer.Game.Screens.Components
                     buildAccount();
                     break;
 
-                default:
-                    setPlaceholder(kind == PanelKind.Comments
-                        ? "评论功能即将上线。"
-                        : kind == PanelKind.Notifications
-                            ? "暂无新通知。"
-                            : "设置项即将上线。");
+                case PanelKind.Settings:
+                    buildSettings();
                     break;
+
+                case PanelKind.Notifications:
+                    // 打开即视为已读（与 osu! 的通知覆盖层一致）；列表本身保留全部历史。
+                    NotificationCenter.MarkAllRead();
+                    attachNotificationRefresh();
+                    renderNotifications();
+                    break;
+
+                case PanelKind.Comments:
+                    buildComments();
+                    break;
+
+                default:
+                    setPlaceholder("设置项即将上线。");
+                    break;
+            }
+        }
+
+        // -------- 推荐（仅手动刷新） --------
+
+        /// <summary>
+        /// 推荐页：进入时只显示上一次的缓存，**不自动请求**；只有点「刷新推荐」才会重新拉取。
+        /// </summary>
+        private void buildRecommend()
+        {
+            var status = new SpriteText
+            {
+                Font = OsuFont.GetFont(size: 16),
+                Colour = Color4.Gray,
+            };
+
+            var refreshButton = new UiTextButton("刷新推荐", null, 18);
+
+            var header = new FillFlowContainer
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 6),
+                Children = new Drawable[] { refreshButton, status },
+            };
+
+            IReadOnlyList<SongInfo> songs = player.CachedRecommend ?? Array.Empty<SongInfo>();
+
+            status.Text = songs.Count > 0
+                ? $"共 {songs.Count} 首 · 仅手动刷新（进入本页不会重新获取）"
+                : "尚未加载，点「刷新推荐」获取。";
+
+            showSongs(songs, header);
+
+            refreshButton.Action = () => _ = refreshAsync();
+
+            async Task refreshAsync()
+            {
+                refreshButton.Enabled.Value = false;
+                status.Text = "正在刷新…";
+
+                try
+                {
+                    IReadOnlyList<SongInfo> fresh = await player.GetRecommendAsync();
+                    AppLog.Ui.Add($"推荐刷新：{fresh.Count} 首", LogLevel.Important);
+
+                    if (currentKind == PanelKind.Recommend)
+                        buildRecommend();
+                }
+                catch (Exception e)
+                {
+                    AppLog.Ui.Add($"推荐刷新失败：{e.Message}", LogLevel.Error, e);
+                    status.Text = $"刷新失败：{e.Message}";
+                    refreshButton.Enabled.Value = true;
+                }
+            }
+        }
+
+        // -------- 设置 --------
+
+        /// <summary>
+        /// 设置页。目前只有「BPM 检测模式」一项：
+        /// <list type="bullet">
+        /// <item>原生：纯 C# 频谱分析（多频带谱通量 + 梳状滤波 + Ellis DP），零依赖、离线可用。</item>
+        /// <item>ONNX：跑 Beat This!（JKU，ISMIR 2024，MIT）节拍模型。它与频谱通量完全独立，
+        /// 因此能提供一份真正的第二意见；代价是 120MB 模型和更长的分析时间。</item>
+        /// </list>
+        /// 模型不进安装包，所以这里同时负责它的下载与状态显示。
+        /// </summary>
+        private void buildSettings()
+        {
+            contentHost.Clear();
+
+            var downloadButton = new UiTextButton("下载模型", null, 17);
+
+            var statusText = new SpriteText
+            {
+                Font = OsuFont.GetFont(size: 17),
+                Colour = Color4.LightGray,
+            };
+
+            // kiai 高潮检测模型（302 张谱面真值训练的小模型，随程序/APPDATA 提供，无需下载）。
+            var kiaiStatusText = new SpriteText
+            {
+                Font = OsuFont.GetFont(size: 17),
+                Colour = Color4.LightGray,
+            };
+
+            // 全局 BPM 层级模型（Ballroom 698 首真值训练，同样随程序提供）。
+            var bpmStatusText = new SpriteText
+            {
+                Font = OsuFont.GetFont(size: 17),
+                Colour = Color4.LightGray,
+            };
+
+            var hint = new TextFlowContainer(t => t.Font = OsuFont.GetFont(size: 15))
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+            };
+            hint.AddText("原生：纯 C# 频谱分析，离线可用，无需额外文件。\n"
+                         + "ONNX：Beat This! 节拍模型，与频谱通量方法相互独立，通常更准；"
+                         + "分析更慢，且未下载模型时会自动回退到原生结果。", t => t.Colour = Color4.Gray);
+
+            var debugHint = new TextFlowContainer(t => t.Font = OsuFont.GetFont(size: 15))
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+            };
+            debugHint.AddText("开启后进入「超级诊断模式」：全量日志 + osu! 原生性能叠加层（input / update / audio / draw "
+                              + "四线程帧率与帧时间曲线）+ 每 2 秒把线程/GC 快照写进 performance.log。排查卡顿时开启。",
+                t => t.Colour = Color4.Gray);
+
+            downloadButton.Action = () =>
+            {
+                downloadButton.Enabled.Value = false;
+                statusText.Text = "正在下载模型…";
+
+                // 进度回调在线程池线程上触发，落到界面必须回到更新线程。
+                var progress = new Progress<double>(p => Schedule(() => statusText.Text = $"正在下载模型… {p * 100:0}%"));
+
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await BeatThisAssets.DownloadAsync(progress).ConfigureAwait(false);
+                        Schedule(refresh);
+                    }
+                    catch (Exception e)
+                    {
+                        AppLog.Beat.Add($"下载 Beat This! 模型失败：{e.Message}", LogLevel.Error, e);
+                        Schedule(() =>
+                        {
+                            statusText.Text = $"下载失败：{e.Message}";
+                            downloadButton.Enabled.Value = true;
+                        });
+                    }
+                });
+            };
+
+            contentHost.Add(new FillFlowContainer
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 10),
+                Children = new Drawable[]
+                {
+                    new BpmModeDropdown
+                    {
+                        Caption = "BPM 检测模式",
+                        Margin = new MarginPadding { Top = 4 },
+                        Current = player.BpmMode,
+                    },
+                    hint,
+                    statusText,
+                    downloadButton,
+                    new SpriteText
+                    {
+                        Text = "高潮检测模型",
+                        Font = OsuFont.GetFont(size: 20, weight: FontWeight.Bold),
+                        Margin = new MarginPadding { Top = 8 },
+                    },
+                    kiaiStatusText,
+                    new SpriteText
+                    {
+                        Text = "BPM 层级模型",
+                        Font = OsuFont.GetFont(size: 20, weight: FontWeight.Bold),
+                        Margin = new MarginPadding { Top = 8 },
+                    },
+                    bpmStatusText,
+                    new FormCheckBox
+                    {
+                        Caption = "调试模式",
+                        Margin = new MarginPadding { Top = 8 },
+                        Current = player.DebugMode,
+                    },
+                    debugHint,
+                    new SpriteText
+                    {
+                        Text = "图形",
+                        Font = OsuFont.GetFont(size: 20, weight: FontWeight.Bold),
+                        Margin = new MarginPadding { Top = 8 },
+                    },
+                    new FrameLimiterDropdown
+                    {
+                        Caption = "帧率上限",
+                        HintText = "限制渲染帧率：越高越流畅也越耗电，垂直同步可避免画面撕裂",
+                        Current = frameworkConfig.GetBindable<FrameSync>(FrameworkSetting.FrameSync),
+                    },
+                    new FormCheckBox
+                    {
+                        Caption = "显示帧率",
+                        HintText = "在窗口右下角显示 osu! 的帧率与帧时间计数器",
+                        Current = player.ShowFps,
+                    },
+                },
+            });
+
+            refresh();
+
+            void refresh()
+            {
+                downloadButton.Text = BeatThisAssets.IsReady ? "重新下载模型" : "下载模型（约 120MB）";
+                downloadButton.Enabled.Value = true;
+
+                statusText.Text = BeatThisAssets.IsReady
+                    ? "模型已就绪。"
+                    : "模型未下载：ONNX 模式会自动回退到原生结果。";
+
+                kiaiStatusText.Text = KiaiAssets.IsReady
+                    ? "kiai ML 模型已就绪（自动用于高潮检测）。"
+                    : "kiai ML 模型未安装：使用能量 + chroma 启发式高潮检测。";
+
+                bpmStatusText.Text = BpmMl.IsAvailable
+                    ? BpmMl.Status
+                    : "BPM 模型未安装：使用原生 BPM 估计。";
             }
         }
 
@@ -474,14 +721,21 @@ namespace OsuPlayer.Game.Screens.Components
             }
         }
 
-        private void showSongs(IReadOnlyList<SongInfo> songs)
+        private void showSongs(IReadOnlyList<SongInfo> songs, Drawable? header = null)
         {
             currentList = songs;
             contentHost.Clear();
 
             if (songs.Count == 0)
             {
-                setPlaceholder("暂无内容。");
+                // 有表头时（例如推荐页的刷新按钮）表头本身带说明，别再压一行「暂无内容」。
+                if (header is null)
+                {
+                    setPlaceholder("暂无内容。");
+                    return;
+                }
+
+                contentHost.Add(header);
                 return;
             }
 
@@ -493,16 +747,11 @@ namespace OsuPlayer.Game.Screens.Components
                 Spacing = new Vector2(0, 6),
             };
 
-            for (int i = 0; i < songs.Count; i++)
-            {
-                int index = i;
-                flow.Add(new SongRow(player, songs[i])
-                {
-                    Action = () => _ = player.PlayAtAsync(currentList, index),
-                });
-            }
+            if (header is not null)
+                flow.Add(header);
 
             contentHost.Add(flow);
+            addSongRowsBatched(flow, songs);
 
             // 列表一出现就在后台预解析前几首，用户点下去时多半已命中缓存（首次请求同时预热网关连接）。
             player.PrewarmList(songs);
@@ -512,6 +761,40 @@ namespace OsuPlayer.Game.Screens.Components
 
             if (vip > 0 || paid > 0)
                 AppLog.Ui.Add($"列表付费标识：VIP {vip} 首，付费 {paid} 首（共 {songs.Count} 首）");
+        }
+
+        /// <summary>
+        /// 一批一帧地往 <paramref name="flow"/> 里加 <see cref="SongRow"/>。
+        /// 长列表（几百首）一次性建完会把更新线程卡住一整帧甚至更久（每个 SongRow 都要建封面和多个文本子节点、
+        /// 触发封面加载），所以改成逐帧增量添加：列表"长出来"的过程界面全程可用。
+        /// </summary>
+        private void addSongRowsBatched(FillFlowContainer<Drawable> flow, IReadOnlyList<SongInfo> songs)
+        {
+            const int batch_size = 12;
+            int next = 0;
+
+            void addBatch()
+            {
+                // 面板切走或列表重绘后 flow 已从树上移除（contentHost.Clear() 会把它销毁），必须停手。
+                if (flow.Parent is null)
+                    return;
+
+                int end = Math.Min(next + batch_size, songs.Count);
+
+                for (; next < end; next++)
+                {
+                    int index = next;
+                    flow.Add(new SongRow(player, songs[index])
+                    {
+                        Action = () => _ = player.PlayAtAsync(currentList, index),
+                    });
+                }
+
+                if (next < songs.Count)
+                    Scheduler.AddDelayed(addBatch, 0);
+            }
+
+            addBatch();
         }
 
         // -------- 本地音乐 --------
@@ -556,6 +839,8 @@ namespace OsuPlayer.Game.Screens.Components
                 },
             };
 
+            contentHost.Add(flow);
+
             if (currentList.Count == 0)
             {
                 var empty = new TextFlowContainer(t => t.Font = OsuFont.GetFont(size: 20))
@@ -568,17 +853,8 @@ namespace OsuPlayer.Game.Screens.Components
             }
             else
             {
-                for (int i = 0; i < currentList.Count; i++)
-                {
-                    int index = i;
-                    flow.Add(new SongRow(player, currentList[i])
-                    {
-                        Action = () => _ = player.PlayAtAsync(currentList, index),
-                    });
-                }
+                addSongRowsBatched(flow, currentList);
             }
-
-            contentHost.Add(flow);
         }
 
         private async void importLocalAsync()
@@ -1015,6 +1291,291 @@ namespace OsuPlayer.Game.Screens.Components
 
         // -------- Misc --------
 
+        private Action? notificationRefresh;
+
+        private void attachNotificationRefresh()
+        {
+            detachNotificationRefresh();
+
+            notificationRefresh = () => Schedule(() =>
+            {
+                // 面板开着时收到新通知就即时刷新（Changed 可能来自任意线程）。
+                if (currentKind == PanelKind.Notifications)
+                    renderNotifications();
+            });
+
+            NotificationCenter.Changed += notificationRefresh;
+        }
+
+        private void detachNotificationRefresh()
+        {
+            if (notificationRefresh is null)
+                return;
+
+            NotificationCenter.Changed -= notificationRefresh;
+            notificationRefresh = null;
+        }
+
+        /// <summary>通知列表：最新的排最前，含时间与来源，长文本自动换行。</summary>
+        private void renderNotifications()
+        {
+            contentHost.Clear();
+
+            IReadOnlyList<NotificationCenter.Entry> all = NotificationCenter.Snapshot();
+
+            if (all.Count == 0)
+            {
+                setPlaceholder("暂无通知。");
+                return;
+            }
+
+            var flow = new FillFlowContainer
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 6),
+            };
+
+            for (int i = all.Count - 1; i >= 0; i--)
+                flow.Add(buildNotificationRow(all[i]));
+
+            contentHost.Add(flow);
+        }
+
+        private static Drawable buildNotificationRow(NotificationCenter.Entry entry)
+        {
+            var message = new TextFlowContainer(t => t.Font = OsuFont.GetFont(size: 16))
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+            };
+            message.AddText(entry.Message, t => t.Colour = Color4.White);
+
+            return new Container
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Children = new Drawable[]
+                {
+                    new Box
+                    {
+                        RelativeSizeAxes = Axes.Both,
+                        Colour = new Color4(255, 255, 255, 0.04f),
+                    },
+                    new FillFlowContainer
+                    {
+                        RelativeSizeAxes = Axes.X,
+                        AutoSizeAxes = Axes.Y,
+                        Direction = FillDirection.Vertical,
+                        Padding = new MarginPadding(8),
+                        Spacing = new Vector2(0, 2),
+                        Children = new Drawable[]
+                        {
+                            new SpriteText
+                            {
+                                Text = $"{entry.Time:HH:mm:ss}   [{entry.Source}]",
+                                Font = OsuFont.GetFont(size: 13),
+                                Colour = Color4.Gray,
+                            },
+                            message,
+                        },
+                    },
+                },
+            };
+        }
+
+        // -------- 评论（只读） --------
+
+        private Action<ValueChangedEvent<SongInfo?>>? commentsSongChanged;
+
+        private void buildComments()
+        {
+            detachCommentsRefresh();
+
+            // 面板开着切歌必须立刻重绘：MusicPlayer 切歌时清空了 Comments，但已生成的条目还在画面上。
+            commentsSongChanged = _ =>
+            {
+                if (currentKind == PanelKind.Comments)
+                    Schedule(renderComments);
+            };
+
+            player.CurrentSong.ValueChanged += commentsSongChanged;
+            renderComments();
+        }
+
+        private void detachCommentsRefresh()
+        {
+            if (commentsSongChanged is null)
+                return;
+
+            player.CurrentSong.ValueChanged -= commentsSongChanged;
+            commentsSongChanged = null;
+        }
+
+        private void renderComments()
+        {
+            contentHost.Clear();
+
+            if (player.CurrentSong.Value is not { } song)
+            {
+                setPlaceholder("当前没有正在播放的曲目。");
+                return;
+            }
+
+            // 本地曲目没有 hash / mixsongid，评论池无从定位。
+            if (song.IsLocal || song.AlbumAudioId == 0)
+            {
+                setPlaceholder(song.IsLocal
+                    ? "本地导入的曲目没有在线评论。"
+                    : "这首歌缺少评论标识（mixsongid），无法读取评论。");
+                return;
+            }
+
+            var flow = new FillFlowContainer
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 12),
+            };
+
+            flow.Add(new TextFlowContainer(t => t.Font = OsuFont.GetFont(size: 14))
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+            }.With(t => t.AddText(
+                player.CommentTotal.Value > 0 ? $"共 {player.CommentTotal.Value} 条评论（只读）" : "歌曲评论（只读）",
+                c => c.Colour = Color4.Gray)));
+
+            foreach (SongComment comment in player.Comments)
+                flow.Add(buildCommentRow(comment));
+
+            string status = player.CommentStatus.Value;
+
+            if (!string.IsNullOrEmpty(status))
+            {
+                var text = new TextFlowContainer(t => t.Font = OsuFont.GetFont(size: 16))
+                {
+                    RelativeSizeAxes = Axes.X,
+                    AutoSizeAxes = Axes.Y,
+                };
+                text.AddText(status, t => t.Colour = Color4.LightGray);
+                flow.Add(text);
+            }
+
+            if (player.Comments.Count > 0 && player.Comments.Count < player.CommentTotal.Value)
+                flow.Add(new UiTextButton("加载更多", () => loadComments(song, true), 20));
+
+            contentHost.Add(flow);
+
+            // 首次进入且既没有内容也没有状态：自动拉第一页。
+            if (player.Comments.Count == 0 && string.IsNullOrEmpty(status))
+                loadComments(song, false);
+        }
+
+        /// <summary>
+        /// 拉评论并在完成后重绘。MusicPlayer 负责状态与 hash 守卫；这里只管面板重绘。
+        /// </summary>
+        private void loadComments(SongInfo song, bool append)
+        {
+            _ = loadCommentsAsync(song, append);
+
+            async Task loadCommentsAsync(SongInfo target, bool appendPage)
+            {
+                await player.LoadCommentsAsync(target, appendPage).ConfigureAwait(false);
+
+                Schedule(() =>
+                {
+                    if (currentKind == PanelKind.Comments)
+                        renderComments();
+                });
+            }
+        }
+
+        private Drawable buildCommentRow(SongComment comment)
+        {
+            var message = new TextFlowContainer(t => t.Font = OsuFont.GetFont(size: 17))
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+            };
+            message.AddText(comment.Content, t => t.Colour = Color4.White);
+
+            var column = new FillFlowContainer
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 3),
+                Children = new Drawable[]
+                {
+                    new FillFlowContainer
+                    {
+                        AutoSizeAxes = Axes.Both,
+                        Direction = FillDirection.Horizontal,
+                        Spacing = new Vector2(8, 0),
+                        Children = new Drawable[]
+                        {
+                            new SpriteText
+                            {
+                                Text = comment.UserName,
+                                Font = OsuFont.GetFont(size: 15, weight: FontWeight.SemiBold),
+                                Colour = Color4.White,
+                            },
+                            new SpriteText
+                            {
+                                Text = comment.MetaText,
+                                Font = OsuFont.GetFont(size: 13),
+                                Colour = Color4.Gray,
+                            },
+                            new SpriteText
+                            {
+                                Text = comment.LikeCount > 0 ? $"♥ {comment.LikeCount}" : string.Empty,
+                                Font = OsuFont.GetFont(size: 13),
+                                Colour = Color4.Gray,
+                            },
+                        },
+                    },
+                    message,
+                },
+            };
+
+            // 子楼：把被回复者与原文压成一行引用，免得看不懂在回谁。
+            if (comment.IsReply)
+            {
+                var quote = new TextFlowContainer(t => t.Font = OsuFont.GetFont(size: 14))
+                {
+                    RelativeSizeAxes = Axes.X,
+                    AutoSizeAxes = Axes.Y,
+                };
+                quote.AddText($"回复 @{comment.ReplyToUser}：{comment.ReplyToContent}", t => t.Colour = Color4.Gray);
+                column.Add(quote);
+            }
+
+            return new Container
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Children = new Drawable[]
+                {
+                    new OnlineSprite(player.OnlineTextures)
+                    {
+                        Position = new Vector2(4, 2),
+                        Size = new Vector2(32),
+                        FillMode = FillMode.Fill,
+                    }.With(s => s.SetUrl(comment.AvatarUrl)),
+                    new Container
+                    {
+                        RelativeSizeAxes = Axes.X,
+                        AutoSizeAxes = Axes.Y,
+                        Padding = new MarginPadding { Left = 46, Right = 4 },
+                        Child = column,
+                    },
+                },
+            };
+        }
+
         private void setPlaceholder(string message)
         {
             contentHost.Clear();
@@ -1035,6 +1596,8 @@ namespace OsuPlayer.Game.Screens.Components
         protected override void Dispose(bool isDisposing)
         {
             stopQrPolling();
+            detachNotificationRefresh();
+            detachCommentsRefresh();
             base.Dispose(isDisposing);
         }
 
@@ -1042,6 +1605,36 @@ namespace OsuPlayer.Game.Screens.Components
         private partial class TruncatingTitle : SpriteText, IHasTooltip
         {
             public LocalisableString TooltipText => IsTruncated ? Text : string.Empty;
+        }
+
+        /// <summary>
+        /// BPM 检测模式下拉框（与「图形」分区同一套 osu! 原生控件），选项文字用中文。
+        /// </summary>
+        private partial class BpmModeDropdown : FormEnumDropdown<BpmDetectionMode>
+        {
+            protected override LocalisableString GenerateItemText(BpmDetectionMode item) => item switch
+            {
+                BpmDetectionMode.Native => "原生（纯 C# 频谱分析）",
+                BpmDetectionMode.Onnx => "ONNX（Beat This! 节拍模型）",
+                _ => base.GenerateItemText(item),
+            };
+        }
+
+        /// <summary>
+        /// 帧率上限下拉框（搬自 FemboyTest）：osu! 用 <see cref="FormEnumDropdown{T}"/>，
+        /// 这里只把选项文字换成中文（按枚举名匹配，未知取值回落到 osu! 自己的文案）。
+        /// </summary>
+        private partial class FrameLimiterDropdown : FormEnumDropdown<FrameSync>
+        {
+            protected override LocalisableString GenerateItemText(FrameSync item) => item.ToString() switch
+            {
+                "VSync" => "垂直同步（跟随显示器刷新率）",
+                "Limit2x" => "刷新率 ×2",
+                "Limit4x" => "刷新率 ×4",
+                "Limit8x" => "刷新率 ×8",
+                "Unlimited" => "不限制",
+                _ => base.GenerateItemText(item),
+            };
         }
     }
 }

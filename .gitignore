@@ -19,6 +19,10 @@ osuplayer/
 visual-tests/
 *.realm
 
+## 谱面 / 评测素材
+# 版权数据，只在本机 24 小时内做训练与评测用，不进版本库。
+/beatmap/
+
 ## Rider / Visual Studio
 .idea/
 .vs/

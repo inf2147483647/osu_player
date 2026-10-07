@@ -14,4 +14,13 @@
   <ItemGroup Label="Resources">
     <EmbeddedResource Include="game.ico" />
   </ItemGroup>
+  <ItemGroup Label="Models">
+    <!-- kiai 帧分类器只有 12KB，直接随程序发布到 <输出目录>/models/kiai（KiaiAssets 会优先用
+         %APPDATA%\OsuPlayer\models\kiai 里的重新训练版本覆盖它）。 -->
+    <Content Include="models\kiai\kiai.onnx" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="models\kiai\config.json" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 全局 BPM 层级模型（Ballroom 698 首真值训练），同样只有几 KB。 -->
+    <Content Include="models\bpm\bpm.onnx" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="models\bpm\config.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

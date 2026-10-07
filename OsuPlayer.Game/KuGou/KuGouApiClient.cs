@@ -47,8 +47,13 @@ namespace OsuPlayer.Game.KuGou
     /// </summary>
     public sealed class KuGouApiClient : IDisposable
     {
-        /// <summary>Overall wall-clock budget for one request attempt (the framework default of 100s is far too long for a UI action).</summary>
-        private static readonly TimeSpan request_timeout = TimeSpan.FromSeconds(20);
+        /// <summary>
+        /// Overall wall-clock budget for one request attempt (the framework default of 100s is far too long for a UI action).
+        ///
+        /// 30 秒而不是 20 秒：酷狗风控（20028）触发后会把该账号的请求拖慢到 17–21 秒（实测），
+        /// 20 秒会把"被限速"表现成"网络异常"，让整条链路看起来全线崩掉。
+        /// </summary>
+        private static readonly TimeSpan request_timeout = TimeSpan.FromSeconds(30);
 
         /// <summary>Extra attempts for idempotent GETs after transport failures / gateway throttling.</summary>
         private const int max_get_attempts = 3;

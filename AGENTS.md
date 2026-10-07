@@ -19,3 +19,4 @@ WARNING!!此过程可能会产生版权数据，请务必在24小时内删除它
 
 C:\Users\Administrator\RiderProjects\osu_player\ui设计稿.png
 为避免产生过多token消费，无需验证，专注实现
+构建完帮我启动

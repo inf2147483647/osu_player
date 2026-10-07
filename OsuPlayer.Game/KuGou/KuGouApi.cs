@@ -547,6 +547,57 @@ namespace OsuPlayer.Game.KuGou
             return fmt == "krc" ? KrcDecoder.Decode(bytes) : System.Text.Encoding.UTF8.GetString(bytes);
         }
 
+        // -------- 歌曲评论（只读） --------
+
+        /// <summary>
+        /// 歌曲评论列表。走标准网关 + <c>x-router: m.comment.service.kugou.com</c>（见
+        /// <see cref="KuGouConstants.comment_router"/>）。
+        ///
+        /// <paramref name="mixSongId"/> 必传：它是评论池的键，对应 <c>SongInfo.AlbumAudioId</c>
+        /// （参考实现同样用 <c>fileId ?? mixSongId</c>）。本地导入的曲目没有它，拿不到评论。
+        ///
+        /// 实测（2026-10，概念版 appid）：返回 <c>{ status:1, err_code:0, count:&lt;总数&gt;, current_page, list:[…] }</c>，
+        /// list 元素含 content / user_name / user_pic / addtime(已格式化) / location / like.likenum /
+        /// puser+pcontent（被回复者）。无需登录即可读。
+        /// </summary>
+        public Task<JObject> GetSongCommentsAsync(string hash, long mixSongId, string songName,
+            int page = 1, int pageSize = 20, CancellationToken ct = default)
+        {
+            long clientTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+            var query = new Dictionary<string, object?>
+            {
+                ["r"] = "comments/getCommentWithLike",
+                ["code"] = KuGouConstants.song_comment_code,
+                // 评论池定位：hash 走 extdata，mixsongid 走独立参数，两者都给最稳。
+                ["extdata"] = hash,
+                ["childrenname"] = songName,
+                ["mixsongid"] = mixSongId,
+                ["p"] = page,
+                ["pagesize"] = pageSize,
+                ["ver"] = 6,
+                ["kugouid"] = session.UserId,
+                // clienttime 与 key 必须成对：请求层是在注入默认参数之后才合并 Query 的，
+                // 这里显式给出的 clienttime 会覆盖注入值，key 就是按它算的，两处不会错位。
+                ["clienttime"] = clientTime,
+                ["key"] = commentKey(clientTime),
+            };
+
+            return client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Get,
+                "/index.php",
+                Query: query,
+                Sign: KuGouSignKind.Android,
+                InjectDefaults: true,
+                Router: KuGouConstants.comment_router), ct);
+        }
+
+        /// <summary>评论接口的 key = md5(appid + 盐 + clientver + clienttime)（_comment.js 的 signParamsKey）。</summary>
+        private string commentKey(long clientTime)
+            => KuGouSigner.Md5Hex($"{KuGouConstants.AppId(session.Platform)}"
+                                   + $"{KuGouConstants.AndroidSalt(session.Platform)}"
+                                   + $"{KuGouConstants.ClientVer(session.Platform)}{clientTime}");
+
         // -------- 获取推荐音乐 --------
         // Anonymous home "刷歌" feed. Only answers over plain HTTP gateway.
         // Shape: { errcode:0, data:{ items:[{ item_type:"song", song_info:{ songname, author_name, hash_128, album_name, ... } }] } }
@@ -768,6 +819,134 @@ namespace OsuPlayer.Game.KuGou
                 Query: query,
                 Sign: KuGouSignKind.Android,
                 InjectDefaults: true), ct);
+        }
+
+        // -------- 账号歌单（含「我喜欢」） --------
+        // 抽自 EchoMusic: server/module/user_playlist.js / playlist_track_all_new.js /
+        // playlist_tracks_add.js / playlist_tracks_del.js（x-router cloudlist.service.kugou.com）。
+
+        /// <summary>账号自建歌单列表（含默认「我喜欢」）。POST /v7/get_all_list → data.info[]。</summary>
+        public Task<JObject> GetUserPlaylistsAsync(int page = 1, int pageSize = 30, CancellationToken ct = default)
+        {
+            var body = new Dictionary<string, object?>
+            {
+                ["userid"] = session.UserId,
+                ["token"] = session.Token,
+                ["total_ver"] = 979,
+                ["type"] = 2,
+                ["page"] = page,
+                ["pagesize"] = pageSize,
+            };
+
+            return client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Post,
+                "/v7/get_all_list",
+                Body: body,
+                Query: new Dictionary<string, object?>
+                {
+                    ["plat"] = 1,
+                    ["userid"] = session.UserId,
+                    ["token"] = session.Token,
+                },
+                Sign: KuGouSignKind.Android,
+                InjectDefaults: true,
+                Router: "cloudlist.service.kugou.com"), ct);
+        }
+
+        /// <summary>账号歌单曲目（分页）。POST /v4/get_list_all_file_v3 → data.info[]。</summary>
+        public Task<JObject> GetUserPlaylistTracksAsync(long listId, int page = 1, int pageSize = 300,
+            CancellationToken ct = default)
+        {
+            var body = new Dictionary<string, object?>
+            {
+                ["listid"] = listId,
+                ["userid"] = session.UserId,
+                ["type"] = 0,
+                ["page"] = page,
+                ["pagesize"] = pageSize,
+                ["area_code"] = 1,
+                ["allplatform"] = 1,
+                ["show_cover"] = 1,
+                ["token"] = session.Token,
+            };
+
+            return client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Post,
+                "/v4/get_list_all_file_v3",
+                Body: body,
+                Sign: KuGouSignKind.Android,
+                InjectDefaults: true,
+                Router: "cloudlist.service.kugou.com"), ct);
+        }
+
+        /// <summary>歌单加歌。POST /cloudlist.service/v6/add_song，成功时 status=1。</summary>
+        public Task<JObject> AddSongToPlaylistAsync(long listId, string name, string hash, long albumId,
+            long mixSongId, CancellationToken ct = default)
+        {
+            long clienttime = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+            var body = new
+            {
+                userid = session.UserId,
+                token = session.Token,
+                listid = listId,
+                list_ver = 0,
+                type = 0,
+                slow_upload = 1,
+                scene = "false;null",
+                data = new[]
+                {
+                    new
+                    {
+                        number = 1,
+                        name,
+                        hash,
+                        size = 0,
+                        sort = 0,
+                        timelen = 0,
+                        bitrate = 0,
+                        album_id = albumId,
+                        mixsongid = mixSongId,
+                    },
+                },
+            };
+
+            return client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Post,
+                "/cloudlist.service/v6/add_song",
+                Body: body,
+                Query: new Dictionary<string, object?>
+                {
+                    ["last_time"] = clienttime,
+                    ["last_area"] = "gztx",
+                    ["userid"] = session.UserId,
+                    ["token"] = session.Token,
+                },
+                Sign: KuGouSignKind.Android,
+                InjectDefaults: true), ct);
+        }
+
+        /// <summary>歌单删歌。<paramref name="fileIds"/> 传曲目的 fileid（缺失时用 album_audio_id）。</summary>
+        public Task<JObject> DeleteSongsFromPlaylistAsync(long listId, IEnumerable<long> fileIds,
+            CancellationToken ct = default)
+        {
+            var body = new
+            {
+                listid = listId,
+                userid = session.UserId,
+                data = fileIds.Select(id => new { fileid = id }).ToArray(),
+                type = 0,
+                token = session.Token,
+                list_ver = 0,
+            };
+
+            return client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Post,
+                "/v4/delete_songs",
+                Body: body,
+                Sign: KuGouSignKind.Android,
+                InjectDefaults: true,
+                Router: "cloudlist.service.kugou.com"), ct);
         }
 
         // -------- 登录（扫码） --------

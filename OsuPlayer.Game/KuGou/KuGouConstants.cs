@@ -59,6 +59,18 @@ namespace OsuPlayer.Game.KuGou
         /// <summary>账号资料服务（module/user_info.js 的 /v1/get_my_userinfo）。</summary>
         public const string relation_base_url = "http://relation.user.kugou.com";
 
+        // -------- 歌曲评论 --------
+        // 评论服务是独立域名，通过标准网关的 x-router 头路由过去（module/_comment.js：
+        // COMMENT_HOST = 'm.comment.service.kugou.com'，路径固定 /index.php）。
+        // 注意：该域名的 HTTPS 证书在本机不受信任（实测握手失败），所以必须走网关 + x-router，
+        // 而不是直接请求该域名。
+
+        /// <summary>评论服务 x-router 目标。</summary>
+        public const string comment_router = "m.comment.service.kugou.com";
+
+        /// <summary>歌曲评论的 code（module/_comment.js 的 SONG_BARRAGE_CODE）。</summary>
+        public const string song_comment_code = "articulossong";
+
         /// <summary>
         /// 概念版免费听/授权链路专用的客户端版本与模块号（song_auth.js、song_url_auth.js 的固定取值，
         /// 与平台无关）。
