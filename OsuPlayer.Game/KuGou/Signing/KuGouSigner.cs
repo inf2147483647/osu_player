@@ -16,6 +16,13 @@ namespace OsuPlayer.Game.KuGou.Signing
             return Convert.ToHexString(hash).ToLowerInvariant();
         }
 
+        /// <summary>SHA1 十六进制小写（微信 sdk_ticket 签名用，util/crypto.js 的 cryptoSha1）。</summary>
+        public static string Sha1Hex(string input)
+        {
+            byte[] hash = SHA1.HashData(Encoding.UTF8.GetBytes(input));
+            return Convert.ToHexString(hash).ToLowerInvariant();
+        }
+
         /// <summary>
         /// Android gateway signature: MD5(salt + sorted "key=value" pairs + body + salt).
         /// </summary>

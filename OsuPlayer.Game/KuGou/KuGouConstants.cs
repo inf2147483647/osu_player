@@ -124,6 +124,64 @@ namespace OsuPlayer.Game.KuGou
 
         public const string user_agent = "Android15-1070-11083-46-0-DiscoveryDRADProtocol-wifi";
 
+        // -------- 登录（验证码 / 密码 / 开放平台 / token） --------
+        // 全部对齐 EchoMusic/server/module/login*.js：这几个接口都是
+        // 「查询串带默认参数 + signature，请求体是业务字段的 JSON」的 POST。
+
+        /// <summary>手机验证码登录的域名（login_cellphone.js）。</summary>
+        public const string login_service_base_url = "https://loginserviceretry.kugou.com";
+
+        /// <summary>发验证码 / 密码登录 / token 登录走这个登录域名。</summary>
+        public const string login_user_base_url = "http://login.user.kugou.com";
+
+        /// <summary>密码登录与开放平台登录的 x-router 目标。</summary>
+        public const string login_router = "login.user.kugou.com";
+
+        /// <summary>发短信验证码的业务号与平台号（captcha_sent.js 固定 businessid=5、plat=3）。</summary>
+        public const int captcha_business_id = 5;
+        public const int captcha_plat = 3;
+
+        /// <summary>概念版登录请求的 t1/t2 派生密钥（login_cellphone.js）。</summary>
+        public const string lite_login_t2_key = "fd14b35e3f81af3817a20ae7adae7020";
+        public const string lite_login_t2_iv = "17a20ae7adae7020";
+        public const string lite_login_t1_key = "5e4ef500e9597fe004bd09a46d8add98";
+        public const string lite_login_t1_iv = "04bd09a46d8add98";
+
+        /// <summary>t2 明文里固定的「MAC」占位串（参考实现对所有设备用同一串）。</summary>
+        public const string login_mac_placeholder = "0f607264fc6318a92b9e13c65db7cd3c";
+
+        /// <summary>概念版登录请求附带的 gitversion（login_cellphone.js）。</summary>
+        public const string lite_gitversion = "5f0b7c4";
+
+        /// <summary>非概念版登录请求用的 t3 占位。</summary>
+        public const string login_t3_placeholder = "MCwwLDAsMCwwLDAsMCwwLDA=";
+
+        /// <summary>登录请求的 User-Agent（login_cellphone.js）。</summary>
+        public const string login_user_agent = "Android16-1070-11440-130-0-LOGIN-wifi";
+
+        /// <summary>微信开放平台应用凭证（util/config.json），微信扫码登录用它换 openid。</summary>
+        public const string wx_appid = "wx79f2c4418704b4f8";
+        public const string wx_secret = "4efcab88b700769e376e3f6087b8abc9";
+        public const string wx_lite_appid = "wx72b795aca60ad321";
+        public const string wx_lite_secret = "33e486041e5e25729a4e3d2da7502f9a";
+
+        /// <summary>微信侧的三个域名：接口、开放平台二维码、长轮询。</summary>
+        public const string wechat_api_base_url = "https://api.weixin.qq.com";
+        public const string wechat_open_base_url = "https://open.weixin.qq.com";
+        public const string wechat_long_base_url = "https://long.open.weixin.qq.com";
+
+        /// <summary>token 快速登录（v5/login_by_token）里 p3 的固定密钥（login_token.js）。</summary>
+        public const string token_login_p3_key = "90b8382a1bb4ccdcf063102053fd75b8";
+        public const string token_login_p3_iv = "f063102053fd75b8";
+        public const string token_login_p3_lite_key = "c24f74ca2820225badc01946dba4fdf7";
+        public const string token_login_p3_lite_iv = "adc01946dba4fdf7";
+
+        public static string WxAppId(KuGouPlatform platform) =>
+            platform == KuGouPlatform.Lite ? wx_lite_appid : wx_appid;
+
+        public static string WxSecret(KuGouPlatform platform) =>
+            platform == KuGouPlatform.Lite ? wx_lite_secret : wx_secret;
+
         public const string browser_user_agent =
             "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 

@@ -34,13 +34,45 @@ namespace OsuPlayer.Game.KuGou.Signing
         /// cryptoAesEncrypt({}) ：随机 16 位小写串 → MD5 前 32 位作密钥、其后 16 位作 IV，
         /// AES-256-CBC + PKCS7 加密 "{}"，输出 hex；密钥原文随响应回传（提交时用 <c>Key</c> 再 RSA）。
         /// </summary>
-        public static AesEncrypted AesEncryptEmptyObject()
+        public static AesEncrypted AesEncryptEmptyObject() => AesEncryptJson("{}");
+
+        /// <summary>
+        /// cryptoAesEncrypt(对象)：JSON 文本 → AES-256-CBC + PKCS7 → 小写 hex。
+        /// 密钥同样由随机 16 位小写串派生（MD5 前 32 位作 key、其后 16 位作 IV），
+        /// 原文随结果返回 —— 登录接口提交的 <c>params</c>/<c>pk</c> 就是「密文 + 被 RSA 的密钥」这一对。
+        /// </summary>
+        public static AesEncrypted AesEncryptJson(string plaintext)
         {
             string tempKey = RandomString(16).ToLowerInvariant();
-            string key = KuGouSigner.Md5Hex(tempKey); // 32 hex 字符，作为 32 字节密钥
-            string iv = key[16..];                    // 末 16 字符，作为 16 字节 IV
-            return new AesEncrypted(tempKey, AesCbcHex(key, iv, "{}"));
+            string key = KuGouSigner.Md5Hex(tempKey);
+            return new AesEncrypted(tempKey, AesCbcHex(key, key[16..], plaintext));
         }
+
+        /// <summary>
+        /// cryptoAesDecrypt ：与 <see cref="AesEncryptJson"/> 对称 —— 密钥 MD5 取前 32 位、
+        /// IV 取其末 16 位，把 hex 密文解成 UTF-8 明文（登录响应里的 <c>secu_params</c> 走这里）。
+        /// </summary>
+        public static string AesDecryptHex(string hex, string tempKey)
+        {
+            string key = KuGouSigner.Md5Hex(tempKey);
+
+            using Aes aes = Aes.Create();
+            aes.Mode = CipherMode.CBC;
+            aes.Padding = PaddingMode.PKCS7;
+            aes.Key = Encoding.UTF8.GetBytes(key);
+            aes.IV = Encoding.UTF8.GetBytes(key[16..]);
+
+            using ICryptoTransform decryptor = aes.CreateDecryptor();
+            byte[] input = Convert.FromHexString(hex);
+            return Encoding.UTF8.GetString(decryptor.TransformFinalBlock(input, 0, input.Length));
+        }
+
+        /// <summary>
+        /// 用固定 key/iv 的 AES-256-CBC（cryptoAesEncrypt(data, {key, iv}) 的重载）：
+        /// 概念版登录请求里的 t1/t2 就是用它算出来的，输出小写 hex。
+        /// </summary>
+        public static string AesEncryptWithFixedKey(string plaintext, string key, string iv)
+            => AesCbcHex(key, iv, plaintext);
 
         /// <summary>
         /// cryptoRSAEncrypt ：用「裸 RSA」（无填充，c = m^e mod n）加密明文，输出定长 hex。

@@ -21,6 +21,15 @@ namespace OsuPlayer.Game.Graphics.Effects
     {
         protected virtual float Intensity => 2;
 
+        /// <summary>一次侧边闪光的全部参数（供外部全屏特效进程复刻同一段动画）。</summary>
+        public readonly record struct FlashEvent(bool Left, float Alpha, double BeatLength, bool Kiai);
+
+        /// <summary>
+        /// 每次真正闪光时触发。外部全屏特效子进程（最小化时贴在桌面上的那个）据此播放同一动画，
+        /// 因而不需要自己重算节拍 —— 两端不会漂移。
+        /// </summary>
+        public event Action<FlashEvent> Flashed;
+
         private Box leftBox;
         private Box rightBox;
 
@@ -87,10 +96,14 @@ namespace OsuPlayer.Game.Graphics.Effects
 
         private void flash(Drawable d, double beatLength, bool kiai, ChannelAmplitudes amplitudes)
         {
-            d.FadeTo(Math.Clamp(0.1f + ((ReferenceEquals(d, leftBox) ? amplitudes.LeftChannel : amplitudes.RightChannel) - amplitude_dead_zone) / (kiai ? kiai_multiplier : alpha_multiplier), 0.1f, 1),
+            float alpha = Math.Clamp(0.1f + ((ReferenceEquals(d, leftBox) ? amplitudes.LeftChannel : amplitudes.RightChannel) - amplitude_dead_zone) / (kiai ? kiai_multiplier : alpha_multiplier), 0.1f, 1);
+
+            d.FadeTo(alpha,
                  box_fade_in_time)
              .Then()
              .FadeOut(beatLength, Easing.In);
+
+            Flashed?.Invoke(new FlashEvent(ReferenceEquals(d, leftBox), alpha, beatLength, kiai));
         }
 
         // osu!'s signature menu blue (OsuColour.Blue).

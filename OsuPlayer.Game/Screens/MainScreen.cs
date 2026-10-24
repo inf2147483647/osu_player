@@ -4,11 +4,14 @@ using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Shapes;
 using osu.Framework.Graphics.Sprites;
+using osu.Framework.Graphics.UserInterface;
+using osu.Framework.Input;
 using osu.Framework.Input.Events;
 using osu.Framework.Input.Bindings;
 using osu.Framework.Screens;
 using osuTK;
 using osuTK.Graphics;
+using osuTK.Input;
 using osu.Game.Beatmaps;
 using osu.Game.Graphics;
 using osu.Game.Graphics.Containers;
@@ -46,6 +49,15 @@ namespace OsuPlayer.Game.Screens
         private SidePanel sidePanel = null!;
         private TimingEditorPanel timingEditor = null!;
 
+        private MenuSideFlashes sideFlashes = null!;
+        private KiaiFountains kiaiFountains = null!;
+
+        /// <summary>
+        /// 把这两个特效真正播放的动画转发给透明全屏特效子进程（播放器最小化时铺在桌面上）。
+        /// 见 <see cref="ExternalOverlayBridge"/>。
+        /// </summary>
+        private ExternalOverlayBridge overlayBridge = null!;
+
         /// <summary>
         /// 文本的「右键 / 触摸长按 → 复制」菜单。缓存在这里，树上任意位置的
         /// <see cref="CopyContextTarget"/>（歌名、歌手、歌词行）都能解析到同一份。
@@ -63,6 +75,9 @@ namespace OsuPlayer.Game.Screens
         [BackgroundDependencyLoader]
         private void load()
         {
+            // 先建桥接（它要拿到下面两个控件的引用），再挂进树。
+            overlayBridge = new ExternalOverlayBridge();
+
             InternalChildren = new Drawable[]
             {
                 // Background.
@@ -73,8 +88,8 @@ namespace OsuPlayer.Game.Screens
                 },
 
                 // osu! beat-synced effects (behind the content).
-                new MenuSideFlashes(),
-                new KiaiFountains(),
+                sideFlashes = new MenuSideFlashes(),
+                kiaiFountains = new KiaiFountains(),
 
                 // Main record disc.
                 new Container
@@ -148,6 +163,10 @@ namespace OsuPlayer.Game.Screens
                 playbackOptions,
                 copyMenu,
             };
+
+            // 把特效动画接给桌面全屏特效子进程（本身无视觉，挂进树只为跟随屏幕生命周期）。
+            overlayBridge.Attach(sideFlashes, kiaiFountains);
+            AddInternal(overlayBridge);
         }
 
         protected override void LoadComplete()
@@ -218,6 +237,29 @@ namespace OsuPlayer.Game.Screens
                 return false;
 
             (notificationOverlay as NotificationOverlay)?.ToggleVisibility();
+            return true;
+        }
+
+        /// <summary>
+        /// 空格键 = 暂停 / 恢复当前曲目。
+        ///
+        /// <para>为什么不走 osu! 的全局动作：osu! 把 Space 和 Enter 一起绑给了
+        /// <c>GlobalAction.Select</c>，用那个动作会让侧栏「输入歌名，回车搜索」的回车顺带切播放状态。
+        /// 这里直接认空格，范围刚好。</para>
+        ///
+        /// <para>输入焦点在输入框里时（搜索歌词、timing 编辑等）不抢空格 ——
+        /// osu!framework 的 <see cref="TextBox"/> 只在有焦点时才进入非位置输入队列，
+        /// 所以必须显式判一次焦点，否则打字时空格会顺带切播放。</para>
+        /// </summary>
+        protected override bool OnKeyDown(KeyDownEvent e)
+        {
+            if (e.Key != Key.Space || e.Repeat)
+                return base.OnKeyDown(e);
+
+            if (GetContainingInputManager() is InputManager input && input.FocusedDrawable is TextBox)
+                return base.OnKeyDown(e);
+
+            player.TogglePlay();
             return true;
         }
 

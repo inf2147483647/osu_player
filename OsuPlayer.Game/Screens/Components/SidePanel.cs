@@ -1,6 +1,7 @@
 using osu.Framework.Allocation;
 using osu.Framework.Bindables;
 using osu.Framework.Configuration;
+using Newtonsoft.Json.Linq;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Cursor;
@@ -65,6 +66,10 @@ namespace OsuPlayer.Game.Screens.Components
         private Action? backAction;
 
         private ScheduledDelegate? qrPollDelegate;
+
+        /// <summary>登录方式切换按钮的两种底色：选中的是播放器的粉色，其余压暗。</summary>
+        private static readonly Color4 tab_active_colour = new Color4(255, 102, 171, 255);
+        private static readonly Color4 tab_idle_colour = new Color4(58, 58, 72, 255);
         private string? qrKey;
 
         private IReadOnlyList<SongInfo> currentList = Array.Empty<SongInfo>();
@@ -125,7 +130,7 @@ namespace OsuPlayer.Game.Screens.Components
                                         Anchor = Anchor.CentreLeft,
                                         Origin = Anchor.CentreLeft,
                                         Font = OsuFont.GetFont(size: 26, weight: FontWeight.Bold),
-                                        Text = "发现",
+                                        Text = "搜索",
                                         MaxWidth = title_max_width,
                                         Truncate = true,
                                     },
@@ -239,7 +244,7 @@ namespace OsuPlayer.Game.Screens.Components
         private static string titleFor(PanelKind kind) => kind switch
         {
             PanelKind.Local => "本地音乐",
-            PanelKind.Search => "发现",
+            PanelKind.Search => "搜索",
             PanelKind.Recommend => "推荐",
             PanelKind.PersonalFm => "私人 FM",
             PanelKind.Liked => "我的喜欢",
@@ -523,6 +528,12 @@ namespace OsuPlayer.Game.Screens.Components
                         Caption = "显示帧率",
                         HintText = "在窗口右下角显示 osu! 的帧率与帧时间计数器",
                         Current = player.ShowFps,
+                    },
+                    new FormCheckBox
+                    {
+                        Caption = "全屏特效",
+                        HintText = "播放器最小化时在桌面上铺开两侧闪光与 kiai 星星喷泉。关闭后不再显示特效，但特效进程会保留（托盘图标与顶层效果窗口仍在）",
+                        Current = player.FullscreenEffects,
                     },
                 },
             });
@@ -964,7 +975,7 @@ namespace OsuPlayer.Game.Screens.Components
 
             if (!player.LoggedIn.Value)
             {
-                buildQrLogin();
+                buildLoginPanel();
                 return;
             }
 
@@ -1162,7 +1173,99 @@ namespace OsuPlayer.Game.Screens.Components
             }
         }
 
-        private void buildQrLogin()
+        /// <summary>
+        /// 未登录时的面板：上面一排登录方式，下面按选择切换表单。
+        /// 除「酷狗扫码」外的几种都对齐 EchoMusic 的登录模块（验证码 / 账号密码 / 微信 / token 快速登录）。
+        /// </summary>
+        private void buildLoginPanel()
+        {
+            var methodRow = new FillFlowContainer
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Horizontal,
+                Spacing = new Vector2(8, 0),
+            };
+
+            var formHost = new FillFlowContainer
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 12),
+            };
+
+            contentHost.Add(new FillFlowContainer
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 16),
+                Children = new Drawable[] { methodRow, formHost },
+            });
+
+            var buttons = new List<(string Kind, OsuPlayerButton Button)>();
+
+            void select(string kind)
+            {
+                // 切方式时把上一个方式的轮询停掉，否则二维码会继续在后台轮询。
+                stopQrPolling();
+                stopWeChatPolling();
+
+                foreach ((string k, OsuPlayerButton button) in buttons)
+                    button.BackgroundColour = k == kind ? tab_active_colour : tab_idle_colour;
+
+                formHost.Clear();
+
+                switch (kind)
+                {
+                    case "sms":
+                        buildSmsLoginForm(formHost);
+                        break;
+
+                    case "password":
+                        buildPasswordLoginForm(formHost);
+                        break;
+
+                    case "wechat":
+                        buildWeChatLoginForm(formHost);
+                        break;
+
+                    case "token":
+                        buildTokenLoginForm(formHost);
+                        break;
+
+                    default:
+                        buildQrLoginForm(formHost);
+                        break;
+                }
+            }
+
+            foreach ((string kind, string label) in new[]
+                     {
+                         ("qrcode", "酷狗扫码"), ("sms", "验证码"), ("password", "账号密码"),
+                         ("wechat", "微信"), ("token", "快速登录"),
+                     })
+            {
+                var button = new OsuPlayerButton
+                {
+                    Width = 96,
+                    Height = 34,
+                    Text = label,
+                };
+
+                string captured = kind;
+                button.Action = () => select(captured);
+
+                buttons.Add((kind, button));
+                methodRow.Add(button);
+            }
+
+            select("qrcode");
+        }
+
+        /// <summary>酷狗 App 扫码登录（原本的唯一入口）。</summary>
+        private void buildQrLoginForm(FillFlowContainer host)
         {
             var statusText = new SpriteText
             {
@@ -1186,26 +1289,17 @@ namespace OsuPlayer.Game.Screens.Components
                 Alpha = 0,
             };
 
-            contentHost.Add(new FillFlowContainer
+            host.Add(new Container
             {
-                RelativeSizeAxes = Axes.X,
-                AutoSizeAxes = Axes.Y,
-                Direction = FillDirection.Vertical,
-                Spacing = new Vector2(0, 14),
-                Children = new Drawable[]
-                {
-                    new Container
-                    {
-                        Width = 220,
-                        Height = 220,
-                        Anchor = Anchor.TopLeft,
-                        Origin = Anchor.TopLeft,
-                        Child = qrSprite,
-                    },
-                    statusText,
-                    refreshButton,
-                },
+                Width = 220,
+                Height = 220,
+                Anchor = Anchor.TopLeft,
+                Origin = Anchor.TopLeft,
+                Child = qrSprite,
             });
+
+            host.Add(statusText);
+            host.Add(refreshButton);
 
             refreshButton.Action = () =>
             {
@@ -1215,6 +1309,213 @@ namespace OsuPlayer.Game.Screens.Components
             };
 
             beginQr(qrSprite, statusText, refreshButton);
+        }
+
+        /// <summary>手机号 + 验证码登录。</summary>
+        private void buildSmsLoginForm(FillFlowContainer host)
+        {
+            OsuTextBox mobile = loginField("手机号");
+            OsuTextBox code = loginField("短信验证码");
+            OsuPlayerButton send = loginAction("发送验证码");
+            OsuPlayerButton login = loginAction("登录");
+            SpriteText status = loginHint("未注册的手机号将自动注册");
+
+            send.Action = async () =>
+            {
+                string number = mobile.Text.Trim();
+
+                if (number.Length == 0)
+                {
+                    status.Text = "请先填写手机号";
+                    return;
+                }
+
+                send.Enabled.Value = false;
+                status.Text = "正在发送验证码…";
+
+                string? error = await player.SendSmsCodeAsync(number);
+
+                send.Enabled.Value = true;
+                status.Text = error ?? "验证码已发送，请查收短信";
+            };
+
+            login.Action = async () =>
+            {
+                string number = mobile.Text.Trim();
+                string smsCode = code.Text.Trim();
+
+                if (number.Length == 0 || smsCode.Length == 0)
+                {
+                    status.Text = "请填写手机号和验证码";
+                    return;
+                }
+
+                login.Enabled.Value = false;
+                status.Text = "正在登录…";
+
+                string? error = await player.LoginBySmsAsync(number, smsCode);
+
+                login.Enabled.Value = true;
+
+                if (error is null)
+                {
+                    buildAccount();
+                    return;
+                }
+
+                status.Text = error;
+            };
+
+            host.Add(mobile);
+            host.Add(code);
+            host.Add(actionRow(send, login));
+            host.Add(status);
+        }
+
+        /// <summary>酷狗账号 + 密码登录。</summary>
+        private void buildPasswordLoginForm(FillFlowContainer host)
+        {
+            OsuTextBox username = loginField("酷狗账号（手机号 / 邮箱 / 用户名）");
+            OsuTextBox password = loginField("密码", password: true);
+            OsuPlayerButton login = loginAction("登录");
+            SpriteText status = loginHint("密码登录由酷狗账号服务校验，不走网页授权");
+
+            login.Action = async () =>
+            {
+                string account = username.Text.Trim();
+                string secret = password.Text;
+
+                if (account.Length == 0 || secret.Length == 0)
+                {
+                    status.Text = "请填写账号和密码";
+                    return;
+                }
+
+                login.Enabled.Value = false;
+                status.Text = "正在登录…";
+
+                string? error = await player.LoginByPasswordAsync(account, secret);
+
+                login.Enabled.Value = true;
+
+                if (error is null)
+                {
+                    buildAccount();
+                    return;
+                }
+
+                status.Text = error;
+            };
+
+            host.Add(username);
+            host.Add(password);
+            host.Add(actionRow(login));
+            host.Add(status);
+        }
+
+        /// <summary>微信扫码登录（走微信开放平台，再用 openid 换酷狗登录态）。</summary>
+        private void buildWeChatLoginForm(FillFlowContainer host)
+        {
+            var statusText = loginHint("正在获取微信二维码…");
+
+            var qrSprite = new OnlineSprite(player.OnlineTextures)
+            {
+                Width = 220,
+                Height = 220,
+                Colour = Color4.White,
+            };
+
+            var refreshButton = loginAction("刷新二维码", 160);
+
+            host.Add(new Container
+            {
+                Width = 220,
+                Height = 220,
+                Anchor = Anchor.TopLeft,
+                Origin = Anchor.TopLeft,
+                Child = qrSprite,
+            });
+
+            host.Add(statusText);
+            host.Add(refreshButton);
+
+            refreshButton.Action = () => beginWeChatQr(qrSprite, statusText, refreshButton);
+            beginWeChatQr(qrSprite, statusText, refreshButton);
+        }
+
+        /// <summary>
+        /// token 快速登录：用手里的登录凭证换一份新登录态。
+        /// 必须是「本机还有凭证」才有意义（凭证已被清掉时只能走上面几种）。
+        /// </summary>
+        private void buildTokenLoginForm(FillFlowContainer host)
+        {
+            bool hasCredential = player.HasStoredCredential;
+
+            SpriteText status = loginHint(hasCredential
+                ? "本机仍有登录凭证，可以直接换一份新的登录态，无需扫码或密码"
+                : "本机没有可复用的登录凭证（凭证已被清掉或换了客户端身份），请改用上面几种方式登录");
+
+            var login = loginAction("快速登录");
+            login.Enabled.Value = hasCredential;
+
+            login.Action = async () =>
+            {
+                login.Enabled.Value = false;
+                status.Text = "正在快速登录…";
+
+                string? error = await player.LoginByTokenAsync();
+
+                login.Enabled.Value = true;
+
+                if (error is null)
+                {
+                    buildAccount();
+                    return;
+                }
+
+                status.Text = error;
+            };
+
+            host.Add(login);
+            host.Add(status);
+        }
+
+        /// <summary>登录表单的输入框（密码框用 osu! 自带的遮字版本）。</summary>
+        private static OsuTextBox loginField(string placeholder, bool password = false)
+        {
+            OsuTextBox box = password ? new OsuPasswordTextBox() : new OsuTextBox();
+
+            box.RelativeSizeAxes = Axes.X;
+            box.PlaceholderText = placeholder;
+            return box;
+        }
+
+        private static SpriteText loginHint(string text) => new SpriteText
+        {
+            Text = text,
+            Font = OsuFont.GetFont(size: 16),
+            Colour = Color4.LightGray,
+        };
+
+        private static OsuPlayerButton loginAction(string text, float width = 130) => new OsuPlayerButton
+        {
+            Width = width,
+            Height = 36,
+            Text = text,
+        };
+
+        private static FillFlowContainer actionRow(params Drawable[] children)
+        {
+            var row = new FillFlowContainer
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Horizontal,
+                Spacing = new Vector2(8, 0),
+            };
+
+            row.AddRange(children);
+            return row;
         }
 
         private async void beginQr(OnlineSprite qrSprite, SpriteText statusText, OsuPlayerButton refreshButton)
@@ -1287,6 +1588,120 @@ namespace OsuPlayer.Game.Screens.Components
             qrPollDelegate?.Cancel();
             qrPollDelegate = null;
             qrKey = null;
+        }
+
+        // -------- 微信扫码登录 --------
+
+        private ScheduledDelegate? weChatPollDelegate;
+        private string? weChatUuid;
+
+        private async void beginWeChatQr(OnlineSprite qrSprite, SpriteText statusText, OsuPlayerButton refreshButton)
+        {
+            stopWeChatPolling();
+            statusText.Text = "正在获取微信二维码…";
+            refreshButton.Alpha = 0;
+
+            try
+            {
+                (string uuid, string image) = await player.CreateWeChatQrAsync();
+
+                if (string.IsNullOrEmpty(image))
+                {
+                    statusText.Text = "微信二维码获取失败，请刷新";
+                    refreshButton.Alpha = 1;
+                    return;
+                }
+
+                weChatUuid = uuid;
+                qrSprite.SetUrl(image);
+                statusText.Text = "请使用微信扫码，并在手机上确认";
+                AppLog.Ui.Add("已获取微信登录二维码");
+            }
+            catch (Exception e)
+            {
+                AppLog.Ui.Add($"微信二维码获取失败：{e.Message}", LogLevel.Error, e);
+                statusText.Text = $"微信二维码获取失败：{e.Message}";
+                refreshButton.Alpha = 1;
+                return;
+            }
+
+            void pollOnce() => _ = pollWeChatOnce(statusText, refreshButton);
+
+            weChatPollDelegate = Scheduler.AddDelayed(pollOnce, 3000, true);
+            Scheduler.Add(pollOnce);
+        }
+
+        private async Task pollWeChatOnce(SpriteText statusText, OsuPlayerButton refreshButton)
+        {
+            if (weChatUuid is not { Length: > 0 } uuid)
+                return;
+
+            JObject response;
+
+            try
+            {
+                response = await player.CheckWeChatQrAsync(uuid);
+            }
+            catch (Exception e)
+            {
+                AppLog.Ui.Add($"微信扫码轮询异常：{e.Message}", LogLevel.Error, e);
+                statusText.Text = "网络异常，请刷新二维码";
+                refreshButton.Alpha = 1;
+                stopWeChatPolling();
+                return;
+            }
+
+            int wxCode = response["wx_errcode"]?.Value<int>() ?? 0;
+
+            switch (wxCode)
+            {
+                case 404:
+                    statusText.Text = "已扫码，请在微信里确认";
+                    break;
+
+                case 405:
+                    stopWeChatPolling();
+                    string? error = await loginWithWeChat(response["wx_code"]?.ToString() ?? string.Empty, statusText);
+
+                    if (error is not null)
+                    {
+                        statusText.Text = error;
+                        refreshButton.Alpha = 1;
+                    }
+
+                    break;
+
+                case 403:
+                    statusText.Text = "二维码已取消或过期，请刷新";
+                    refreshButton.Alpha = 1;
+                    stopWeChatPolling();
+                    break;
+            }
+        }
+
+        private async Task<string?> loginWithWeChat(string wxCode, SpriteText statusText)
+        {
+            if (wxCode.Length == 0)
+                return "微信未返回授权码，请刷新二维码重试";
+
+            statusText.Text = "正在完成微信登录…";
+
+            string? error = await player.LoginByWeChatAsync(wxCode);
+
+            if (error is null)
+            {
+                buildAccount();
+                return null;
+            }
+
+            return error;
+        }
+
+        private void stopWeChatPolling()
+        {
+            weChatPollDelegate?.Cancel();
+            weChatPollDelegate = null;
+            weChatUuid = null;
         }
 
         // -------- Misc --------

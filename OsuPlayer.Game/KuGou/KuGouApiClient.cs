@@ -37,7 +37,9 @@ namespace OsuPlayer.Game.KuGou
         bool InjectDefaults = false,
         bool MillisecondTime = false,
         bool IncludeUuid = true,
-        string? Router = null);
+        string? Router = null,
+        // 逐个接口要覆盖的请求头（登录接口用专属的 User-Agent 与 support-calm，标准头不够用）。
+        IReadOnlyDictionary<string, string>? Headers = null);
 
     /// <summary>
     /// HTTP transport for the three KuGou request flavours verified live (2026-10):
@@ -161,6 +163,16 @@ namespace OsuPlayer.Game.KuGou
 
                 if (!string.IsNullOrEmpty(request.Router))
                     httpRequest.Headers.TryAddWithoutValidation("x-router", request.Router);
+
+                // 接口级覆盖放在最后：登录接口要换掉 User-Agent（其中的平台字段会被服务端读走）。
+                if (request.Headers is not null)
+                {
+                    foreach (var header in request.Headers)
+                    {
+                        httpRequest.Headers.Remove(header.Key);
+                        httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                    }
+                }
 
                 if (request.Method == HttpMethod.Post)
                     httpRequest.Content = new StringContent(bodyJson, Encoding.UTF8, "application/json");

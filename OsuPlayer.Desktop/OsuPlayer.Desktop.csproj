@@ -10,6 +10,12 @@
   </PropertyGroup>
   <ItemGroup Label="Project References">
     <ProjectReference Include="..\OsuPlayer.Game\OsuPlayer.Game.csproj" />
+    <!-- 「桌面全屏特效」子进程（Avalonia，透明 + 点击穿透 + 置顶）：osu!framework 的窗口做不了透明背景，
+         所以最小化时的全屏闪光/星星喷泉由这个独立进程画。
+         ReferenceOutputAssembly=false：只作为构建依赖，不引用它的程序集、也不把 Avalonia 的 DLL
+         拷进播放器输出目录（播放器输出目录里混入另一套 UI 栈会带来冲突风险）。运行时由
+         ExternalOverlayBridge 按相对路径去 ..\osu!avalonia\bin 下找 exe。 -->
+    <ProjectReference Include="..\..\osu!avalonia\OsuPlayer.Overlay.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
   <ItemGroup Label="Resources">
     <EmbeddedResource Include="game.ico" />

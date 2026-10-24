@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Net.Http;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using OsuPlayer.Game.KuGou.Signing;
 using OsuPlayer.Game.Logging;
@@ -1026,6 +1027,389 @@ namespace OsuPlayer.Game.KuGou
             }
 
             return result;
+        }
+
+        // -------- 登录（验证码 / 账号密码 / 微信开放平台 / token 快速登录） --------
+        // 与扫码登录并列的另外几种登录方式，逐条对齐 EchoMusic/server/module/login*.js。
+        // 共同形状：查询串放默认参数（dfid/mid/uuid/appid/clientver/clienttime）+ signature，
+        // 请求体放业务字段的 JSON；凭据字段（params/pk）用「AES 密文 + 被 RSA 的密钥」成对提交。
+
+        /// <summary>发送手机短信验证码（module/captcha_sent.js：businessid=5、plat=3）。</summary>
+        public Task<JObject> SendMobileCodeAsync(string mobile, CancellationToken ct = default)
+        {
+            var body = new Dictionary<string, object?>
+            {
+                ["businessid"] = KuGouConstants.captcha_business_id,
+                ["mobile"] = mobile,
+                ["plat"] = KuGouConstants.captcha_plat,
+            };
+
+            return client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Post,
+                "/v7/send_mobile_code",
+                BaseUrl: KuGouConstants.login_user_base_url,
+                Body: body,
+                Sign: KuGouSignKind.Android,
+                InjectDefaults: true,
+                Headers: loginHeaders()), ct);
+        }
+
+        /// <summary>手机号 + 验证码登录（module/login_cellphone.js 的 /v7/login_by_verifycode）。</summary>
+        public async Task<JObject> LoginByVerifyCodeAsync(string mobile, string code, CancellationToken ct = default)
+        {
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            KuGouVerificationCrypto.AesEncrypted encrypted = KuGouVerificationCrypto.AesEncryptJson(
+                JsonConvert.SerializeObject(new { mobile, code }));
+
+            var body = new Dictionary<string, object?>
+            {
+                ["plat"] = 1,
+                ["support_multi"] = 1,
+                ["clienttime_ms"] = now,
+                // 手机号要打码后再提交（参考实现里只有这一处脱敏）。
+                ["mobile"] = maskMobile(mobile),
+                ["key"] = KuGouSigner.SignParamsKey(now.ToString(CultureInfo.InvariantCulture), session.Platform),
+                ["pk"] = rsaCredentialKey(now, encrypted.Key),
+                ["params"] = encrypted.Hex,
+            };
+
+            addLoginTimeFields(body, now);
+
+            JObject result = await client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Post,
+                "/v7/login_by_verifycode",
+                BaseUrl: KuGouConstants.login_service_base_url,
+                Body: body,
+                Sign: KuGouSignKind.Android,
+                InjectDefaults: true,
+                Headers: loginHeaders()), ct).ConfigureAwait(false);
+
+            applyLoginResult(result, encrypted.Key);
+            return result;
+        }
+
+        /// <summary>账号 + 密码登录（module/login.js 的 /v9/login_by_pwd）。</summary>
+        public async Task<JObject> LoginByPasswordAsync(string username, string password, CancellationToken ct = default)
+        {
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            KuGouVerificationCrypto.AesEncrypted encrypted = KuGouVerificationCrypto.AesEncryptJson(
+                JsonConvert.SerializeObject(new { pwd = password, code = string.Empty, clienttime_ms = now }));
+
+            var body = new Dictionary<string, object?>
+            {
+                ["plat"] = 1,
+                ["support_multi"] = 1,
+                ["clienttime_ms"] = now,
+                ["username"] = username,
+                ["dev"] = session.Device.Dev,
+                ["pk"] = rsaCredentialKey(now, encrypted.Key),
+                ["params"] = encrypted.Hex,
+            };
+
+            addLoginTimeFields(body, now);
+
+            JObject result = await client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Post,
+                "/v9/login_by_pwd",
+                Body: body,
+                Sign: KuGouSignKind.Android,
+                InjectDefaults: true,
+                Router: KuGouConstants.login_router,
+                Headers: loginHeaders()), ct).ConfigureAwait(false);
+
+            applyLoginResult(result, encrypted.Key);
+            return result;
+        }
+
+        /// <summary>
+        /// 微信扫码登录第一步：微信 access_token → sdk_ticket → 带签名的登录二维码。
+        /// 这一步完全走微信开放平台，与酷狗无关（module/login_wx_create.js）。
+        /// 返回 uuid 与二维码图片的 data-uri。
+        /// </summary>
+        public async Task<(string Uuid, string QrImage)> CreateWeChatQrAsync(CancellationToken ct = default)
+        {
+            string appId = KuGouConstants.WxAppId(session.Platform);
+
+            JObject token = await client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Get,
+                "/cgi-bin/token",
+                BaseUrl: KuGouConstants.wechat_api_base_url,
+                Query: new Dictionary<string, object?>
+                {
+                    ["appid"] = appId,
+                    ["secret"] = KuGouConstants.WxSecret(session.Platform),
+                    ["grant_type"] = "client_credential",
+                }), ct).ConfigureAwait(false);
+
+            string accessToken = token["access_token"]?.ToString() ?? string.Empty;
+
+            if (accessToken.Length == 0)
+                throw new KuGouApiException($"微信 access_token 获取失败：{token.ToString(Formatting.None)}");
+
+            JObject ticket = await client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Get,
+                "/cgi-bin/ticket/getticket",
+                BaseUrl: KuGouConstants.wechat_api_base_url,
+                Query: new Dictionary<string, object?>
+                {
+                    ["access_token"] = accessToken,
+                    ["type"] = 2,
+                }), ct).ConfigureAwait(false);
+
+            string sdkTicket = ticket["ticket"]?.ToString() ?? string.Empty;
+
+            if (sdkTicket.Length == 0)
+                throw new KuGouApiException($"微信 sdk_ticket 获取失败：{ticket.ToString(Formatting.None)}");
+
+            long timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            string nonce = KuGouSigner.Md5Hex(KuGouVerificationCrypto.RandomString(16));
+
+            string signature = KuGouSigner.Sha1Hex(
+                $"appid={appId}&noncestr={nonce}&sdk_ticket={sdkTicket}&timestamp={timestamp}");
+
+            JObject connect = await client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Get,
+                "/connect/sdk/qrconnect",
+                BaseUrl: KuGouConstants.wechat_open_base_url,
+                Query: new Dictionary<string, object?>
+                {
+                    ["appid"] = appId,
+                    ["noncestr"] = nonce,
+                    ["timestamp"] = timestamp,
+                    ["scope"] = "snsapi_userinfo",
+                    ["signature"] = signature,
+                }), ct).ConfigureAwait(false);
+
+            string uuid = connect["uuid"]?.ToString() ?? string.Empty;
+            string base64 = connect["qrcode"]?["qrcodebase64"]?.ToString() ?? string.Empty;
+            string qrUrl = connect["qrcode"]?["qrcodeurl"]?.ToString() ?? string.Empty;
+
+            string image = base64.Length > 0
+                ? (base64.StartsWith("data:", StringComparison.Ordinal) ? base64 : $"data:image/jpeg;base64,{base64}")
+                : qrUrl;
+
+            if (uuid.Length == 0 || image.Length == 0)
+                throw new KuGouApiException($"微信二维码获取失败：{connect.ToString(Formatting.None)}");
+
+            return (uuid, image);
+        }
+
+        /// <summary>
+        /// 长轮询微信扫码结果（module/login_wx_check.js）。
+        /// <c>wx_errcode</c>：408 未扫、404 已扫待确认、405 已确认（此时带 <c>wx_code</c>）、403 取消/过期。
+        /// </summary>
+        public Task<JObject> CheckWeChatQrAsync(string uuid, CancellationToken ct = default)
+            => client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Get,
+                "/connect/l/qrconnect",
+                BaseUrl: KuGouConstants.wechat_long_base_url,
+                Query: new Dictionary<string, object?>
+                {
+                    ["f"] = "json",
+                    ["uuid"] = uuid,
+                }), ct);
+
+        /// <summary>
+        /// 微信开放平台登录（module/login_openplat.js）：先用授权码换 openid，再用 openid 换酷狗登录态。
+        /// </summary>
+        public async Task<JObject> LoginByOpenPlatAsync(string wxCode, CancellationToken ct = default)
+        {
+            JObject token = await client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Post,
+                "/sns/oauth2/access_token",
+                BaseUrl: KuGouConstants.wechat_api_base_url,
+                Query: new Dictionary<string, object?>
+                {
+                    ["secret"] = KuGouConstants.WxSecret(session.Platform),
+                    ["appid"] = KuGouConstants.WxAppId(session.Platform),
+                    ["code"] = wxCode,
+                    ["grant_type"] = "authorization_code",
+                }), ct).ConfigureAwait(false);
+
+            string openId = token["openid"]?.ToString() ?? string.Empty;
+
+            if (openId.Length == 0)
+                throw new KuGouApiException($"微信 openid 获取失败：{token.ToString(Formatting.None)}");
+
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            KuGouVerificationCrypto.AesEncrypted encrypted = KuGouVerificationCrypto.AesEncryptJson(
+                JsonConvert.SerializeObject(new { access_token = token["access_token"]?.ToString() ?? string.Empty }));
+
+            var body = new Dictionary<string, object?>
+            {
+                ["force_login"] = 1,
+                ["partnerid"] = 36,
+                ["clienttime_ms"] = now,
+                ["openid"] = openId,
+                ["pk"] = rsaCredentialKey(now, encrypted.Key),
+                ["params"] = encrypted.Hex,
+            };
+
+            addLoginTimeFields(body, now);
+
+            JObject result = await client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Post,
+                "/v6/login_by_openplat",
+                Body: body,
+                Sign: KuGouSignKind.Android,
+                InjectDefaults: true,
+                Router: KuGouConstants.login_router,
+                Headers: loginHeaders()), ct).ConfigureAwait(false);
+
+            applyLoginResult(result, encrypted.Key);
+            return result;
+        }
+
+        /// <summary>
+        /// token 快速登录（module/login_token.js 的 /v5/login_by_token）：拿手里已有的 token 换一份新的登录态，
+        /// 不用扫码也不用密码。p3 用固定密钥加密 {clienttime(秒), token}，params/pk 用随机密钥包一个空对象。
+        /// </summary>
+        public async Task<JObject> LoginByTokenAsync(CancellationToken ct = default)
+        {
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            bool lite = session.Platform == KuGouPlatform.Lite;
+
+            KuGouVerificationCrypto.AesEncrypted empty = KuGouVerificationCrypto.AesEncryptEmptyObject();
+
+            var body = new Dictionary<string, object?>
+            {
+                ["dfid"] = session.Dfid,
+                ["plat"] = 1,
+                ["clienttime_ms"] = now,
+                ["p3"] = KuGouVerificationCrypto.AesEncryptWithFixedKey(
+                    JsonConvert.SerializeObject(new
+                    {
+                        clienttime = now / 1000,
+                        token = session.Token,
+                    }),
+                    lite ? KuGouConstants.token_login_p3_lite_key : KuGouConstants.token_login_p3_key,
+                    lite ? KuGouConstants.token_login_p3_lite_iv : KuGouConstants.token_login_p3_iv),
+                ["params"] = empty.Hex,
+                ["pk"] = KuGouVerificationCrypto.RawRsaEncryptHex(
+                    $"{{\"clienttime_ms\":{now},\"key\":\"{empty.Key}\"}}", session.Platform),
+                ["userid"] = session.UserId,
+                ["t3"] = KuGouConstants.login_t3_placeholder,
+            };
+
+            addLoginTimeFields(body, now);
+
+            JObject result = await client.SendAsync(new KuGouApiRequest(
+                HttpMethod.Post,
+                "/v5/login_by_token",
+                BaseUrl: KuGouConstants.login_user_base_url,
+                Body: body,
+                Sign: KuGouSignKind.Android,
+                InjectDefaults: true,
+                Headers: loginHeaders()), ct).ConfigureAwait(false);
+
+            applyLoginResult(result, empty.Key);
+            return result;
+        }
+
+        // -------- 登录公共部分 --------
+
+        /// <summary>登录接口的请求头：专属 User-Agent + support-calm（module/login*.js）。</summary>
+        private static IReadOnlyDictionary<string, string> loginHeaders() => new Dictionary<string, string>
+        {
+            ["support-calm"] = "1",
+            ["User-Agent"] = KuGouConstants.login_user_agent,
+        };
+
+        /// <summary>手机号打码：前 2 位 + ***** + 最后 1 位（参考实现的表单要求）。</summary>
+        private static string maskMobile(string mobile)
+            => mobile.Length >= 11 ? $"{mobile[..2]}*****{mobile[10..11]}" : mobile;
+
+        /// <summary>pk 字段：把本次 AES 的密钥连同时间戳一起做裸 RSA，再转大写。</summary>
+        private string rsaCredentialKey(long now, string aesKey)
+            => KuGouVerificationCrypto
+               .RawRsaEncryptHex($"{{\"clienttime_ms\":{now},\"key\":\"{aesKey}\"}}", session.Platform)
+               .ToUpperInvariant();
+
+        /// <summary>
+        /// 登录请求共有的一段时间戳派生字段：概念版要 t1/t2/dfid/dev/gitversion，其它平台用 t3 占位。
+        /// t1/t2 是固定密钥的 AES，把设备身份与时间戳绑在一起（module/login_cellphone.js）。
+        /// </summary>
+        private void addLoginTimeFields(IDictionary<string, object?> body, long now)
+        {
+            if (session.Platform == KuGouPlatform.Lite)
+            {
+                body["t1"] = KuGouVerificationCrypto.AesEncryptWithFixedKey(
+                    $"|{now}", KuGouConstants.lite_login_t1_key, KuGouConstants.lite_login_t1_iv);
+
+                // 明文模板：guid|固定MAC占位|设备MAC|dev|时间戳（本客户端没有独立 MAC，留空位）。
+                body["t2"] = KuGouVerificationCrypto.AesEncryptWithFixedKey(
+                    $"{session.Device.Guid}|{KuGouConstants.login_mac_placeholder}||{session.Device.Dev}|{now}",
+                    KuGouConstants.lite_login_t2_key, KuGouConstants.lite_login_t2_iv);
+
+                body["dfid"] = session.Dfid;
+                body["dev"] = session.Device.Dev;
+                body["gitversion"] = KuGouConstants.lite_gitversion;
+            }
+            else
+            {
+                body["t1"] = 0;
+                body["t2"] = 0;
+                body["t3"] = KuGouConstants.login_t3_placeholder;
+            }
+        }
+
+        /// <summary>
+        /// 登录响应落地：<c>data.secu_params</c> 是用本次请求的 AES 密钥加密的凭据包，
+        /// 解开后并入 <c>data</c>（里面是 token/userid/vip_type/vip_token），再写进会话。
+        /// </summary>
+        private bool applyLoginResult(JObject response, string aesKey)
+        {
+            if (response["data"] is not JObject data)
+                return false;
+
+            if (data["secu_params"]?.ToString() is { Length: > 0 } secu)
+            {
+                string plain;
+
+                try
+                {
+                    plain = KuGouVerificationCrypto.AesDecryptHex(secu, aesKey);
+                }
+                catch (Exception e)
+                {
+                    AppLog.Net.Add($"登录凭据解密失败：{e.Message}", LogLevel.Important);
+                    return false;
+                }
+
+                // 参考实现是 JSON.parse，失败就当纯文本 token 处理。
+                JToken parsed;
+
+                try
+                {
+                    parsed = JToken.Parse(plain);
+                }
+                catch (Exception)
+                {
+                    parsed = new JValue(plain);
+                }
+
+                if (parsed is JObject extras)
+                {
+                    foreach (JProperty property in extras.Properties())
+                        data[property.Name] = property.Value;
+                }
+                else
+                {
+                    data["token"] = parsed.Type == JTokenType.String ? parsed.ToString() : plain;
+                }
+            }
+
+            string token = data["token"]?.ToString() ?? string.Empty;
+
+            if (token.Length == 0)
+                return false;
+
+            session.SetLogin(token,
+                data["userid"]?.Value<long>() ?? 0,
+                data["vip_type"]?.Value<int>() ?? 0,
+                data["vip_token"]?.ToString() ?? string.Empty);
+
+            return true;
         }
     }
 }

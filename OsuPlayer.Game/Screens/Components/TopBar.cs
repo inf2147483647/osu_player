@@ -14,7 +14,7 @@ namespace OsuPlayer.Game.Screens.Components
 {
     /// <summary>
     /// Top navigation strip of the design draft:
-    /// 设置 / 推荐 / 发现 / 私人FM / 喜欢 / 播放历史 / 歌单 on the left,
+    /// 设置 / 推荐 / 搜索 / 私人FM / 喜欢 / 播放历史 / 歌单 on the left,
     /// 正在播放 / 账号 / live clock / 通知 on the right.
     /// </summary>
     public partial class TopBar : Container
@@ -65,7 +65,7 @@ namespace OsuPlayer.Game.Screens.Components
                         nav("设置", PanelKind.Settings),
                         nav("本地", PanelKind.Local),
                         nav("推荐", PanelKind.Recommend),
-                        nav("发现", PanelKind.Search),
+                        nav("搜索", PanelKind.Search),
                         nav("私人FM", PanelKind.PersonalFm),
                         nav("喜欢", PanelKind.Liked),
                         nav("播放历史", PanelKind.History),

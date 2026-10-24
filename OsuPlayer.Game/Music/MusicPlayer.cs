@@ -74,6 +74,13 @@ namespace OsuPlayer.Game.Music
         /// <c>OsuPlayerGame</c> 会把它同步到 <c>OsuSetting.ShowFpsDisplay</c>，供 <c>FPSCounter</c> 读取。
         /// </summary>
         public BindableBool ShowFps { get; } = new(true);
+
+        /// <summary>
+        /// 是否开启全屏特效（播放器最小化时铺在桌面上的两侧闪光 + kiai 星星喷泉）。
+        /// 关掉只是不再显示特效，<b>特效进程仍然保留</b>（进程里还有托盘图标与顶层效果窗口），
+        /// 由 <c>ExternalOverlayBridge</c> 改成不展开而已。
+        /// </summary>
+        public BindableBool FullscreenEffects { get; } = new(true);
         public Bindable<string> StatusText { get; } = new(string.Empty);
         public Bindable<string> CurrentCover { get; } = new(string.Empty);
 
@@ -274,6 +281,21 @@ namespace OsuPlayer.Game.Music
         /// <summary>写入 player-state.json 的手动套用歌词条数上限（歌词文本较长，避免状态文件膨胀）。</summary>
         private const int lyric_overrides_persisted = 40;
 
+        /// <summary>
+        /// 播放历史上限。
+        ///
+        /// <para>为什么要有上限、以及这个数字是怎么来的：整份播放状态（历史是其中最大的一块）在每次变化后
+        /// 都会在更新线程上整体序列化并原子写盘，所以"能存多少条"的真正约束是<b>状态文件体积</b>，不是调用栈——
+        /// 实测一条历史约 430 字节（其中 timing 占一半、封面地址占两成），5000 条约 2MB：
+        /// 一次保存约几十毫秒，且经过 1.5 秒防抖，只在操作停下来后发生一次，交互上察觉不到；
+        /// 再往上加就会在每次保存时产生可感知的卡顿。</para>
+        ///
+        /// <para>关于栈溢出：保存与恢复全程都是循环遍历——<see cref="addHistory"/> 的裁剪、
+        /// <c>JArray</c>/<c>JObject</c> 的构造、JSON 的读写，没有任何随条数增长而加深的递归，
+        /// 所以条数再多也不会栈溢出；会先耗尽的是磁盘与内存，不是调用栈。</para>
+        /// </summary>
+        private const int history_max = 5000;
+
         // -------- 播放状态持久化 --------
 
         private const string state_file = "player-state.json";
@@ -323,6 +345,7 @@ namespace OsuPlayer.Game.Music
             BpmMode.BindValueChanged(_ => queueStateSave());
             DebugMode.BindValueChanged(_ => queueStateSave());
             ShowFps.BindValueChanged(_ => queueStateSave());
+            FullscreenEffects.BindValueChanged(_ => queueStateSave());
             Liked.BindCollectionChanged((_, _) => queueStateSave());
             History.BindCollectionChanged((_, _) => queueStateSave());
             LocalTracks.BindCollectionChanged((_, _) => queueStateSave());
@@ -358,6 +381,12 @@ namespace OsuPlayer.Game.Music
         }
 
         public bool IsLoggedIn => api.Session.IsLoggedIn;
+
+        /// <summary>
+        /// 本机是否还留着可用的登录凭证（token）。
+        /// 「快速登录」用它判断有没有东西可换 —— 凭证被清掉（登出/换了客户端身份）时只能走扫码、验证码或密码。
+        /// </summary>
+        public bool HasStoredCredential => !string.IsNullOrEmpty(api.Session.Token);
 
         public BindableBool LoggedIn { get; } = new();
 
@@ -935,6 +964,7 @@ namespace OsuPlayer.Game.Music
                     ["bpmMode"] = BpmMode.Value.ToString(),
                     ["debugMode"] = DebugMode.Value,
                     ["showFps"] = ShowFps.Value,
+                    ["fullscreenEffects"] = FullscreenEffects.Value,
                     ["liked"] = new JArray(Liked.Select(toJson)),
                     ["history"] = new JArray(History.Select(toJson)),
                     ["local"] = new JArray(LocalTracks.Select(toJson)),
@@ -1006,6 +1036,7 @@ namespace OsuPlayer.Game.Music
                 BpmMode.Value = Enum.TryParse(state["bpmMode"]?.ToString(), out BpmDetectionMode bpmMode) ? bpmMode : BpmMode.Value;
                 DebugMode.Value = state["debugMode"]?.Value<bool>() ?? DebugMode.Value;
                 ShowFps.Value = state["showFps"]?.Value<bool>() ?? ShowFps.Value;
+                FullscreenEffects.Value = state["fullscreenEffects"]?.Value<bool>() ?? FullscreenEffects.Value;
 
                 string quality = state["quality"]?.ToString() ?? Quality.Value;
                 Quality.Value = quality;
@@ -1021,6 +1052,11 @@ namespace OsuPlayer.Game.Music
                     if (history is JObject stored)
                         History.Add(fromJson(stored));
                 }
+
+                // 文件里的条数可能多于当前上限（旧版本写的、或手工改过的存档），恢复后立刻收敛到上限，
+                // 否则这份超限的历史会一直被原样写回去，还会在历史面板里一次性铺出上万行。
+                for (int i = History.Count - history_max; i > 0; i--)
+                    History.RemoveAt(History.Count - 1);
 
                 foreach (JToken local in state["local"] ?? new JArray())
                 {
@@ -2493,7 +2529,9 @@ namespace OsuPlayer.Game.Music
         {
             History.Remove(song);
             History.Insert(0, song);
-            while (History.Count > 100)
+
+            // 迭代裁剪：先算清要丢掉几条，再逐条删除；不是递归，条数再大也不会加深调用栈。
+            for (int i = History.Count - history_max; i > 0; i--)
                 History.RemoveAt(History.Count - 1);
         }
 
@@ -2630,15 +2668,120 @@ namespace OsuPlayer.Game.Music
             AppLog.Player.Add($"二维码登录状态轮询 → {status}");
 
             if (status == 4)
-            {
-                LoggedIn.Value = true;
-                AppLog.Player.Add($"扫码登录成功，用户 ID：{LoginUserId}", LogLevel.Important);
-                refreshMemberState();
-                _ = RefreshLikedAsync(force: true); // 登录后「喜欢」改为读账号歌单
-                saveState(); // 登录凭证立即落盘，重启后仍然保持登录
-            }
+                completeLogin("扫码登录");
 
             return status;
+        }
+
+        // -------- 其它登录方式（验证码 / 账号密码 / 微信 / token 快速登录） --------
+        // 逐条对齐 EchoMusic 的登录模块；接口本身在 KuGouApi，这里只负责「调用 → 判定 →
+        // 登录后的收尾」，让各方式的收尾完全一致。
+
+        /// <summary>发送手机短信验证码；返回 null 表示已发出，否则是给用户看的失败原因。</summary>
+        public async Task<string?> SendSmsCodeAsync(string mobile)
+        {
+            try
+            {
+                JObject response = await AppLog.Player.TimeAsync("发送短信验证码",
+                    () => api.SendMobileCodeAsync(mobile),
+                    r => $"，status={r["status"]}，errcode={r["errcode"]}").ConfigureAwait(false);
+
+                if (response["status"]?.Value<int>() == 1)
+                    return null;
+
+                return describeLoginFailure(response);
+            }
+            catch (Exception e)
+            {
+                AppLog.Player.Add($"发送短信验证码失败：{e.Message}", LogLevel.Error, e);
+                return e.Message;
+            }
+        }
+
+        public Task<string?> LoginBySmsAsync(string mobile, string code)
+            => finishLoginAsync("验证码登录", () => api.LoginByVerifyCodeAsync(mobile, code));
+
+        public Task<string?> LoginByPasswordAsync(string username, string password)
+            => finishLoginAsync("账号密码登录", () => api.LoginByPasswordAsync(username, password));
+
+        /// <summary>token 快速登录：用手里的登录凭证换一份新登录态，不用扫码也不用密码。</summary>
+        public Task<string?> LoginByTokenAsync()
+            => finishLoginAsync("快速登录", () => api.LoginByTokenAsync());
+
+        /// <summary>微信扫码登录第一步：拿二维码（uuid + 图片 data-uri）。</summary>
+        public async Task<(string Uuid, string QrImage)> CreateWeChatQrAsync()
+        {
+            (string uuid, string image) = await api.CreateWeChatQrAsync().ConfigureAwait(false);
+
+            AppLog.Player.Add($"已创建微信登录二维码（uuid={uuid[..Math.Min(12, uuid.Length)]}）");
+
+            return (uuid, image);
+        }
+
+        /// <summary>长轮询微信扫码结果（wx_errcode：408 未扫、404 已扫待确认、405 已确认、403 取消/过期）。</summary>
+        public Task<JObject> CheckWeChatQrAsync(string uuid) => api.CheckWeChatQrAsync(uuid);
+
+        /// <summary>微信确认后，用它给的授权码换酷狗登录态。</summary>
+        public Task<string?> LoginByWeChatAsync(string wxCode)
+            => finishLoginAsync("微信登录", () => api.LoginByOpenPlatAsync(wxCode));
+
+        /// <summary>
+        /// 各登录方式的公共收尾：判定响应里有没有真的拿到登录态，成功就刷新会员、重读「喜欢」并立刻落盘。
+        /// 返回 null 表示登录成功，否则是给用户看的失败原因。
+        /// </summary>
+        private async Task<string?> finishLoginAsync(string what, Func<Task<JObject>> login)
+        {
+            JObject response;
+
+            try
+            {
+                response = await AppLog.Player.TimeAsync(what, login,
+                    r => $"，status={r["status"]}，errcode={r["errcode"]}").ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                AppLog.Player.Add($"{what}失败：{e.Message}", LogLevel.Error, e);
+                return e.Message;
+            }
+
+            if (!api.Session.IsLoggedIn)
+            {
+                string reason = describeLoginFailure(response);
+                AppLog.Player.Add($"{what}未成功：{reason}", LogLevel.Important);
+                return reason;
+            }
+
+            completeLogin(what);
+            return null;
+        }
+
+        /// <summary>
+        /// 登录成功后的统一收尾。扫码登录（<see cref="PollQrAsync"/>）也走这里，
+        /// 保证几种登录方式在「会员状态 / 喜欢歌单 / 落盘」上的行为完全一致。
+        /// </summary>
+        private void completeLogin(string what)
+        {
+            LoggedIn.Value = true;
+            AppLog.Player.Add($"{what}成功，用户 ID：{LoginUserId}", LogLevel.Important);
+            refreshMemberState();
+            _ = RefreshLikedAsync(force: true); // 登录后「喜欢」改为读账号歌单
+            saveState();                        // 登录凭证立即落盘，重启后仍然保持登录
+        }
+
+        /// <summary>把登录失败响应翻译成一句话（各接口的字段名不统一，逐个兜）。</summary>
+        private static string describeLoginFailure(JObject response)
+        {
+            foreach (string field in new[] { "error", "msg", "message", "errmsg" })
+            {
+                if (response[field]?.ToString() is { Length: > 0 } text)
+                    return text;
+            }
+
+            string? code = response["errcode"]?.ToString() ?? response["error_code"]?.ToString();
+
+            return code is { Length: > 0 } and not "0"
+                ? $"酷狗返回错误码 {code}"
+                : "登录未成功，请检查填写内容";
         }
 
         /// <summary>
