@@ -56,6 +56,9 @@ namespace OsuPlayer.Game.Screens.Components
 
         private readonly FillFlowContainer<TimingRow> rowFlow;
 
+        /// <summary>下半部分的滚动视口；高度随画布高度变化（见 <see cref="Update"/>）。</summary>
+        private OsuScrollContainer bodyScroll = null!;
+
         private readonly FormTextBox timeBox;
         private readonly RoundedButton useCurrentTimeButton;
         private readonly OsuPlayerButton deleteButton;
@@ -231,7 +234,7 @@ namespace OsuPlayer.Game.Screens.Components
                 },
                 // 面板高度固定，内容超出时此前会被 Masking 直接裁掉且无法滚动；滚轮还会穿透到主界面
                 // 去滚动歌词。整块内容改放进滚动视口，顶栏固定在视口之上、不随内容滚动。
-                new OsuScrollContainer
+                bodyScroll = new OsuScrollContainer
                 {
                     RelativeSizeAxes = Axes.X,
                     Y = header_bar_height,
@@ -440,6 +443,20 @@ namespace OsuPlayer.Game.Screens.Components
             rebindFields();
 
             this.Show();
+        }
+
+        protected override void Update()
+        {
+            base.Update();
+
+            // 画布高度会随窗口比例变化（设计稿 16:9 只是基准）：面板与内部滚动视口都要跟着铺满。
+            if (Parent is not null)
+                Height = Math.Max(0, Parent.ChildSize.Y - Y);
+
+            float bodyHeight = Math.Max(0, Height - header_bar_height);
+
+            if (Math.Abs(bodyScroll.Height - bodyHeight) > 0.5f)
+                bodyScroll.Height = bodyHeight;
         }
 
         protected override void PopIn()

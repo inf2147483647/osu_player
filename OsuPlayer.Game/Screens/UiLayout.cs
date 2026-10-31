@@ -21,8 +21,10 @@ namespace OsuPlayer.Game.Screens
         /// </summary>
         public const float DiscDrawDiameter = DiscDiameter * 0.85f;
 
-        /// <summary>Centre X of the title/artist block (sits above-right of the disc).</summary>
-        public const float TitleCentreX = 635;
+        /// <summary>
+        /// 歌名 / 歌手 / 状态行的纵向位置。横向不写死：这三行锚在窗口顶边中线上
+        /// （<c>Anchor.TopCentre</c>），随窗口宽度保持居中。
+        /// </summary>
         public const float TitleY = 92;
         public const float ArtistY = 146;
     }

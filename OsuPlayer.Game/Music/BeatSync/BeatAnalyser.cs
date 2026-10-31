@@ -136,7 +136,8 @@ namespace OsuPlayer.Game.Music.BeatSync
             {
                 AppLog.Beat.Add($"音频过短无法分析（{frames.Count} 帧）", LogLevel.Important);
                 return new BeatAnalysisDetails(new BeatAnalysis(120, 0, 0, 0, Array.Empty<KiaiSection>()),
-                    120, 0, false, null, null, null, frames.Count, frames.Count > 0 ? frames[^1].Time : 0, 0, "too-few-frames");
+                    120, 0, false, null, null, null, frames.Count, frames.Count > 0 ? frames[^1].Time : 0, 0, "too-few-frames",
+                    120, 0);
             }
 
             double duration = frames[^1].Time;
@@ -202,7 +203,8 @@ namespace OsuPlayer.Game.Music.BeatSync
                 engineBRaw?.RawBeatCount,
                 engineBRaw is { Bpm: > 0 } ? Math.Round(engineBRaw.Irregularity, 3) : null,
                 frames.Count, Math.Round(duration, 1), Math.Round(hopRate, 1),
-                engineBRaw is { Valid: true } ? null : engineBRaw?.RejectReason);
+                engineBRaw is { Valid: true } ? null : engineBRaw?.RejectReason,
+                bpm, beatPhaseMs);
 
             AppLog.Beat.Add($"分析完成：bpm={result.Bpm} conf={result.Confidence} "
                            + $"beatPhase={Math.Round(beatPhaseMs)}ms downbeat={result.BeatPhaseMs}ms "
@@ -1373,6 +1375,126 @@ namespace OsuPlayer.Game.Music.BeatSync
         }
 
         /// <summary>
+        /// 首起音锚点：返回歌曲第一个显著起音落在的小节内拍位（0..beatsPerBar-1）；起音明显夹在
+        /// 两拍之间（弱起/前奏音型）时返回 -1，交给结构线索。
+        ///
+        /// 编曲上第一个音几乎总落在小节第一拍；osu! 谱面的首条红线（评估真值）同样落在第一个音上。
+        /// 这是整首歌唯一一个"确定在第一条小节线上"的点，比统计整首的和声变化可靠得多，所以直接采用。
+        ///
+        /// 触发这条线索的是 FrogMonster《Remember Our Summer》：该曲 5..1735ms 静音，第一个音在 1.88s，
+        /// 落在 offset 3 的拍点 (1766.25ms) 而非和声线索选的 offset 0 (2235ms) —— 恰好晚一拍，也就是
+        /// 用户反复反馈的"慢一拍"。（先用"按结构极差的 0.6 / 1.25 倍加权"试过：因为该曲与多数曲目的
+        /// 结构极差只有 0.007~0.02，远小于 structure_flat_threshold，评分会被兜底分支整个替换掉，
+        /// 加权的锚点根本传不到决策 —— 所以这里改成直接决定，不参与打分。）
+        /// </summary>
+        private static int firstOnsetAnchorOffset(double[] onset, double phase, double period, int beatsPerBar)
+        {
+            double onsetMean = 0;
+
+            foreach (double v in onset)
+                onsetMean += v;
+
+            onsetMean /= onset.Length;
+
+            double onsetVariance = 0;
+
+            foreach (double v in onset)
+                onsetVariance += (v - onsetMean) * (v - onsetMean);
+
+            double onsetThreshold = onsetMean + Math.Sqrt(onsetVariance / onset.Length);
+
+            int firstOnset = -1;
+
+            for (int i = 1; i < onset.Length; i++)
+            {
+                if (onset[i] >= onsetThreshold)
+                {
+                    firstOnset = i;
+                    break;
+                }
+            }
+
+            if (firstOnset < 0)
+                return -1;
+
+            double onsetOffset = (firstOnset - phase) / period % beatsPerBar;
+
+            if (onsetOffset < 0)
+                onsetOffset += beatsPerBar;
+
+            double nearest = Math.Round(onsetOffset);
+
+            // 起音必须确实落在拍点上才认账；明显夹在两拍之间说明这首歌带弱起/前奏音型，交给结构线索。
+            return Math.Abs(onsetOffset - nearest) <= first_onset_tolerance ? (int)nearest % beatsPerBar : -1;
+        }
+
+        /// <summary>一个网格上的逐拍特征集（训练数据导出用）。</summary>
+        /// <param name="BeatTimesMs">每个网格拍的中心时间（毫秒），第 m 项对应网格第 m 拍。</param>
+        /// <param name="Features">每拍 20 维：12 色度 + 7 对数频段 + 1 起音强度（均为拍窗口内的值）。</param>
+        /// <param name="AnchorOffset">首起音锚点相对该网格的拍位（0..3），弱起时为 -1。</param>
+        public sealed record BeatGridFeatures(IReadOnlyList<double> BeatTimesMs, IReadOnlyList<double[]> Features,
+            int AnchorOffset);
+
+        /// <summary>
+        /// 训练数据导出：给定网格（起点相位 + 拍长，毫秒），输出每个网格拍的 20 维特征与首起音
+        /// 锚点拍位。与 <see cref="detectDownbeatPhase"/> 走同一批私有特征函数
+        /// （<see cref="buildBeatDescriptors"/> / <see cref="buildOnsetEnvelope"/>），
+        /// 保证训练/推理特征严格同源 —— 这是 kiai 导出踩过并验证过的口径问题。
+        /// </summary>
+        public Task<BeatGridFeatures?> ExtractBeatFeaturesAsync(byte[] audio, double gridPhaseMs, double beatLengthMs)
+            => Task.Run(() =>
+            {
+                List<Frame> frames = decodeFeatureFrames(audio);
+                int n = frames.Count;
+
+                if (n < 16 || beatLengthMs <= 0)
+                    return null;
+
+                double span = frames[^1].Time - frames[0].Time;
+                double hopRate = span > 0 ? (n - 1) / span : 86;
+                double period = hopRate * beatLengthMs / 1000.0;
+
+                if (period < 2)
+                    return null;
+
+                double phase = gridPhaseMs / 1000.0 * hopRate;
+                phase -= Math.Floor(phase / period) * period;
+
+                int lastBeat = (int)((n - 1 - phase) / period);
+
+                if (lastBeat < 8)
+                    return null;
+
+                int beatCount = lastBeat + 1;
+
+                (double[][] chroma, double[][] timbre) = buildBeatDescriptors(frames, phase, period, beatCount);
+                double[] onset = buildOnsetEnvelope(frames);
+                int anchorOffset = firstOnsetAnchorOffset(onset, phase, period, 4);
+
+                var times = new double[beatCount];
+                var features = new double[beatCount][];
+
+                for (int m = 0; m < beatCount; m++)
+                {
+                    double centre = phase + m * period;
+                    times[m] = centre / hopRate * 1000;
+
+                    var f = new double[chroma_bins + band_count + 1];
+
+                    for (int k = 0; k < chroma_bins; k++)
+                        f[k] = chroma[m][k];
+
+                    for (int k = 0; k < band_count; k++)
+                        f[chroma_bins + k] = timbre[m][k];
+
+                    f[chroma_bins + band_count] = peakAt(onset, centre);
+                    features[m] = f;
+                }
+
+                return new BeatGridFeatures(times, features, anchorOffset);
+            });
+
+        /// <summary>
         /// 起音包络：全频带的半波整流对数增幅（与 <see cref="estimateTempo"/> 的白化思路一致，
         /// 但不做 DP）。仲裁只需要这条连续包络，不必把它峰化 —— 峰化会引入门限这个额外旋钮，
         /// 而门限一旦偏松，precision 就会对所有候选饱和，判据随即失效。
@@ -1545,57 +1667,11 @@ namespace OsuPlayer.Game.Music.BeatSync
                     structureMax = v;
             }
 
-            // 第一条也是最硬的一条线索：**歌曲第一个显著起音的相位**。
-            //
-            // 编曲上第一个音几乎总落在小节第一拍；osu! 谱面的首条红线（评估用的真值）同样落在第一个音上。
-            // 这是整首歌唯一一个"确定在第一条小节线上"的点，比统计整首的和声变化可靠得多，所以直接采用。
-            //
-            // 触发这次改动的是 FrogMonster《Remember Our Summer》：该曲 5..1735ms 静音，第一个音在 1.88s，
-            // 落在 offset 3 的拍点 (1766.25ms) 而非和声线索选的 offset 0 (2235ms) —— 恰好晚一拍，也就是
-            // 用户反复反馈的"慢一拍"。（先用"按结构极差的 0.6 / 1.25 倍加权"试过：因为该曲与多数曲目的
-            // 结构极差只有 0.007~0.02，远小于 structure_flat_threshold，评分会被兜底分支整个替换掉，
-            // 加权的锚点根本传不到决策 —— 所以这里改成直接决定，不参与打分。）
-            double[] onset = buildOnsetEnvelope(frames);
-            double onsetMean = 0;
-
-            foreach (double v in onset)
-                onsetMean += v;
-
-            onsetMean /= onset.Length;
-
-            double onsetVariance = 0;
-
-            foreach (double v in onset)
-                onsetVariance += (v - onsetMean) * (v - onsetMean);
-
-            double onsetThreshold = onsetMean + Math.Sqrt(onsetVariance / onset.Length);
-
-            int firstOnset = -1;
-
-            for (int i = 1; i < onset.Length; i++)
-            {
-                if (onset[i] >= onsetThreshold)
-                {
-                    firstOnset = i;
-                    break;
-                }
-            }
-
-            int anchorOffset = -1;
-
-            if (firstOnset >= 0)
-            {
-                double onsetOffset = (firstOnset - phase) / period % beats_per_bar;
-
-                if (onsetOffset < 0)
-                    onsetOffset += beats_per_bar;
-
-                double nearest = Math.Round(onsetOffset);
-
-                // 起音必须确实落在拍点上才认账；明显夹在两拍之间说明这首歌带弱起/前奏音型，交给结构线索。
-                if (Math.Abs(onsetOffset - nearest) <= first_onset_tolerance)
-                    anchorOffset = (int)nearest % beats_per_bar;
-            }
+            // 第一条也是最硬的一条线索：**歌曲第一个显著起音的相位**。编曲上第一个音几乎总落在小节
+            // 第一拍，osu! 谱面的首条红线（评估真值）同样落在第一个音上 —— 详细理由与实测记录见
+            // <see cref="firstOnsetAnchorOffset"/> 的文档。落点夹在两拍之间（弱起/前奏音型）时返回
+            // -1，交给下面的结构线索。
+            int anchorOffset = firstOnsetAnchorOffset(buildOnsetEnvelope(frames), phase, period, beats_per_bar);
 
             if (anchorOffset >= 0)
             {

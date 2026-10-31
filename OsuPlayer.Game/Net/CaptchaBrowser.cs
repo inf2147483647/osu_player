@@ -17,9 +17,15 @@ namespace OsuPlayer.Game.Net
     /// 故意不用 <see cref="HttpListener"/>：它在 Windows 上需要 URL ACL 或管理员权限；直接使用
     /// <see cref="TcpListener"/> 只需回环端口，普通用户即可运行。
     /// </summary>
-    internal static class CaptchaBrowser
+    public static class CaptchaBrowser
     {
         public sealed record CaptchaResult(string Ticket, string RandStr);
+
+        /// <summary>
+        /// 平台接管的「打开验证页」钩子（安卓端用系统浏览器 <c>Intent.ACTION_VIEW</c> 实现）。
+        /// 参数为页面 URL（回环地址），返回是否成功拉起浏览器；不设置则走桌面 <see cref="Process.Start"/>。
+        /// </summary>
+        public static Func<string, bool>? ExternalPageOpener;
 
         /// <summary>打开验证页并等待用户完成验证；超时或取消返回 null。</summary>
         public static async Task<CaptchaResult?> SolicitAsync(string tencentAppId, TimeSpan timeout,
@@ -41,7 +47,13 @@ namespace OsuPlayer.Game.Net
             try
             {
                 AppLog.Net.Add($"打开浏览器进行安全验证：{pageUrl}", osu.Framework.Logging.LogLevel.Important);
-                Process.Start(new ProcessStartInfo(pageUrl) { UseShellExecute = true });
+
+                bool opened = ExternalPageOpener is { } opener
+                    ? opener(pageUrl)
+                    : Process.Start(new ProcessStartInfo(pageUrl) { UseShellExecute = true }) is not null;
+
+                if (!opened)
+                    throw new InvalidOperationException("浏览器未拉起（平台未处理打开请求）");
             }
             catch (Exception e)
             {

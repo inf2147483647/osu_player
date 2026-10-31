@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="icu.nagisa.osuplayer"
+          android:installLocation="auto">
+  <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="36" />
+
+  <!-- 酷狗接口、在线封面/歌词、节拍分析下载音频都需要联网 -->
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+  <application android:label="osu!_player"
+               android:allowBackup="true"
+               android:supportsRtl="true" />
+</manifest>

@@ -160,6 +160,18 @@ namespace OsuPlayer.Game.Screens.Components
             };
         }
 
+        /// <summary>
+        /// 设计稿是 16:9（画布 1366×768），但窗口比例不同时画布会被拉得更长/更宽：
+        /// 面板必须跟着铺满顶栏以下的全部高度，否则列表底部会留出一截背景（看起来"被截短"）。
+        /// </summary>
+        protected override void Update()
+        {
+            base.Update();
+
+            if (Parent is not null)
+                Height = Math.Max(0, Parent.ChildSize.Y - Y);
+        }
+
         public void Show(PanelKind kind)
         {
             currentKind = kind;
@@ -516,6 +528,12 @@ namespace OsuPlayer.Game.Screens.Components
                         Text = "图形",
                         Font = OsuFont.GetFont(size: 20, weight: FontWeight.Bold),
                         Margin = new MarginPadding { Top = 8 },
+                    },
+                    new CoverRotationDropdown
+                    {
+                        Caption = "封面旋转方式",
+                        HintText = "跟随歌词：歌词滚动多少角度，封面就转多少角度；匀速：封面按固定周期匀速自转",
+                        Current = player.CoverRotation,
                     },
                     new FrameLimiterDropdown
                     {
@@ -2031,6 +2049,19 @@ namespace OsuPlayer.Game.Screens.Components
             {
                 BpmDetectionMode.Native => "原生（纯 C# 频谱分析）",
                 BpmDetectionMode.Onnx => "ONNX（Beat This! 节拍模型）",
+                _ => base.GenerateItemText(item),
+            };
+        }
+
+        /// <summary>
+        /// 封面旋转方式下拉框：跟随歌词 / 匀速。
+        /// </summary>
+        private partial class CoverRotationDropdown : FormEnumDropdown<CoverRotationMode>
+        {
+            protected override LocalisableString GenerateItemText(CoverRotationMode item) => item switch
+            {
+                CoverRotationMode.FollowLyrics => "跟随歌词",
+                CoverRotationMode.Constant => "匀速",
                 _ => base.GenerateItemText(item),
             };
         }

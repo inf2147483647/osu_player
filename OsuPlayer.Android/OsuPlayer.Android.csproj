@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup Label="Project">
+    <TargetFramework>net10.0-android</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>OsuPlayer.Android</RootNamespace>
+    <AssemblyName>OsuPlayer.Android</AssemblyName>
+    <ApplicationId>icu.nagisa.osuplayer</ApplicationId>
+    <ApplicationVersion>1</ApplicationVersion>
+    <ApplicationDisplayVersion>0.1.0</ApplicationDisplayVersion>
+  </PropertyGroup>
+
+  <!-- 与 osu! 官方的 osu.Android.props 保持一致（ppy.osu.Framework.Android 的既定宿主配置）。 -->
+  <PropertyGroup Label="osu.framework android">
+    <!-- onnxruntime 的 aar 要求 minSdk 24（Android 7.0），框架本身只要求 21。 -->
+    <SupportedOSPlatformVersion>24.0</SupportedOSPlatformVersion>
+    <!-- 只出 arm64-v8a 单架构 APK：框架的 aar 里只有 arm64-v8a / armeabi-v7a / x86 的原生库，
+         没有 x86_64，所以模拟器（x86_64）不在支持范围内，真机 arm64 是主要目标。 -->
+    <RuntimeIdentifier>android-arm64</RuntimeIdentifier>
+    <AndroidPackageFormat>apk</AndroidPackageFormat>
+    <!-- 中文字体/CJK 区域化资源，否则 osu!framework 的文本渲染在非英文环境会缺字。 -->
+    <MandroidI18n>CJK;Mideast;Rare;West;Other;</MandroidI18n>
+    <!-- 不设 AndroidHttpClientHandlerType：保持 .NET 默认的托管 SocketsHttpHandler（与 osu! 上游一致）。
+         AndroidMessageHandler 会把流量路由进 Java 的 HttpURLConnection 栈，在那里 KuGou 的 http://
+         直链被 cleartext 策略/连接失败吃掉，只抛出一条 "failure"；托管栈用 BoringSSL 直连，无此问题。 -->
+    <!-- Android 默认关闭 NullabilityInfoContext，Newtonsoft 等反射路径需要它。 -->
+    <NullabilityInfoContextSupport>true</NullabilityInfoContextSupport>
+    <!-- 程序集必须打进 APK，否则只能走 fast deployment（脱离 IDE 装不上）。 -->
+    <EmbedAssembliesIntoApk>true</EmbedAssembliesIntoApk>
+    <DisableFody>true</DisableFody>
+    <NoWarn>$(NoWarn);XA4218</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup Label="Package References">
+    <PackageReference Include="ppy.osu.Framework.Android" Version="2026.1030.0" />
+  </ItemGroup>
+
+  <ItemGroup Label="Project References">
+    <ProjectReference Include="..\OsuPlayer.Game\OsuPlayer.Game.csproj" />
+  </ItemGroup>
+
+  <!-- 同 osu.Android.props：Xamarin.Jetbrains.Annotations 与 JetBrains.Annotations 里的
+       NotNullAttribute 会重名，给 Xamarin 那份加别名避开编译冲突。 -->
+  <Target Name="AddPackageAliases" BeforeTargets="FindReferenceAssembliesForReferences;ResolveReferences">
+    <ItemGroup>
+      <ReferencePath Condition="%(Filename) == 'Xamarin.Jetbrains.Annotations'">
+        <Aliases>XamarinJetbrainsAnnotations</Aliases>
+      </ReferencePath>
+    </ItemGroup>
+  </Target>
+</Project>

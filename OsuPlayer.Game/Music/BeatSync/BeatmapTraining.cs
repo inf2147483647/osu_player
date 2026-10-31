@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿﻿﻿﻿﻿﻿using System.Globalization;
 using System.IO.Compression;
 using System.Text;
 using OsuPlayer.Game.Logging;
@@ -21,7 +21,7 @@ namespace OsuPlayer.Game.Music.BeatSync
     public static class BeatmapTraining
     {
         /// <summary>谱面里的一条 TimingPoint（只保留训练用得上的字段）。</summary>
-        public sealed record TimingPoint(double TimeMs, double BeatLengthMs, bool Uninherited, bool Kiai);
+        public sealed record TimingPoint(double TimeMs, double BeatLengthMs, bool Uninherited, bool Kiai, int Meter = 4);
 
         /// <summary>一张谱面的标准答案。</summary>
         public sealed record MapTruth(string Name, IReadOnlyList<TimingPoint> Points, string AudioFileName)
@@ -147,6 +147,221 @@ namespace OsuPlayer.Game.Music.BeatSync
 
             return name;
         }
+
+        /// <summary>
+        /// 把目录下所有 .osz 的**逐拍特征**导出为 CSV（每首一个文件），供 Python 训练下拍（downbeat）
+        /// 模型。特征 20 维 = 12 色度 + 7 对数频段 + 1 起音强度，由
+        /// <see cref="BeatAnalyser.ExtractBeatFeaturesAsync"/> 给出 —— 与运行时
+        /// <see cref="BeatAnalyser.detectDownbeatPhase"/> 用的私有特征函数严格同源。
+        ///
+        /// 两种模式：
+        /// evalGrid=false（训练）：网格取谱面真值（主速度红线）；真值标签由 Python 按 t0/拍号贴，
+        /// 另导一份半拍偏移网格（*.half.csv）作"非拍点"负样本。
+        /// evalGrid=true（评测）：网格取分析器的原生检测结果（未取整 BPM 与小节修正**前**的相位，
+        /// 与 detectDownbeatPhase 看到的完全一致），表头附带真值 t0 与锚点拍位，Python 离线对比
+        /// 「锚点 vs 模型」两种下拍决策。
+        /// </summary>
+        /// <param name="namesFilterPath">可选：一行一个谱面名（不含扩展名），只导出名单内的谱面。</param>
+        public static async Task<string> ExportBeatFeaturesAsync(string mapDirectory, string outputDirectory,
+                                                                 bool evalGrid, string? namesFilterPath = null,
+                                                                 CancellationToken ct = default)
+        {
+            string[] maps = Directory.GetFiles(mapDirectory, "*.osz");
+            Array.Sort(maps, StringComparer.OrdinalIgnoreCase);
+
+            HashSet<string>? filter = null;
+
+            if (namesFilterPath is not null)
+            {
+                filter = File.ReadAllLines(namesFilterPath)
+                             .Select(l => l.Trim())
+                             .Where(l => l.Length > 0)
+                             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+                maps = maps.Where(m => filter.Contains(Path.GetFileNameWithoutExtension(m))).ToArray();
+            }
+
+            Directory.CreateDirectory(outputDirectory);
+
+            int written = 0, skipped = 0, nonFourFour = 0;
+            // eval 模式要跑完整分析（内部有 Parallel.For 且 BASS 流是全局资源），必须串行（见 RunAsync
+            // 的注释）；训练模式只解码 + 构建描述子，可以 2 路并行（与 kiai 导出相同）。
+            const int evalParallelism = 1;
+            int trainParallelism = Math.Max(1, Environment.ProcessorCount / 2);
+            int parallelism = evalGrid ? evalParallelism : trainParallelism;
+
+            var counters = new int[maps.Length]; // 1=written, -1=skipped, -2=非4/4
+
+            await Parallel.ForEachAsync(Enumerable.Range(0, maps.Length), new ParallelOptions
+            {
+                MaxDegreeOfParallelism = parallelism,
+                CancellationToken = ct,
+            }, async (index, _) =>
+            {
+                string map = maps[index];
+                string name = Path.GetFileNameWithoutExtension(map);
+
+                try
+                {
+                    (MapTruth truth, byte[] audio) = load(map);
+
+                    if (truth.TempoPoints.Count == 0 || audio.Length == 0)
+                    {
+                        counters[index] = -1;
+                        return;
+                    }
+
+                    string output;
+
+                    if (evalGrid)
+                        output = await exportEvalGridAsync(name, truth, audio, outputDirectory).ConfigureAwait(false);
+                    else
+                        output = await exportTrainGridAsync(name, truth, audio, outputDirectory).ConfigureAwait(false);
+
+                    counters[index] = output.Length > 0 ? 1 : -2;
+                }
+                catch (Exception e)
+                {
+                    counters[index] = -1;
+                    AppLog.Beat.Add($"拍特征导出：{name} 失败：{e.Message}", LogLevel.Error, e);
+                }
+            });
+
+            written = counters.Count(c => c == 1);
+            nonFourFour = counters.Count(c => c == -2);
+            skipped = counters.Count(c => c == -1);
+
+            string summary = $"逐拍特征导出完成（{(evalGrid ? "评测网格" : "真值网格")}）：{written} 首"
+                             + $" → {outputDirectory}（跳过/失败 {skipped}，非 4/4 {nonFourFour}）。";
+            AppLog.Beat.Add(summary, LogLevel.Important);
+            return summary;
+        }
+
+        /// <summary>真值网格导出：主速度红线定义网格与标签边界，另导半拍偏移的负样本网格。</summary>
+        private static async Task<string> exportTrainGridAsync(string name, MapTruth truth, byte[] audio,
+                                                               string outputDirectory)
+        {
+            IReadOnlyList<TimingPoint> tempos = truth.TempoPoints;
+            var analyser = new BeatAnalyser();
+
+            // 先用第一条红线做网格跑一遍拿时长（多数曲目单速，命中即不用第二次解码）。
+            BeatAnalyser.BeatGridFeatures? feat = await analyser.ExtractBeatFeaturesAsync(audio, tempos[0].TimeMs, tempos[0].BeatLengthMs).ConfigureAwait(false);
+
+            if (feat is null)
+                return string.Empty;
+
+            double duration = feat.BeatTimesMs[^1] + 1000;
+            double truthBpm = dominantBpm(tempos, duration);
+            TimingPoint phaseRef = tempos.FirstOrDefault(t => Math.Abs(60000.0 / t.BeatLengthMs - truthBpm) < 0.5, tempos[0]);
+
+            if (phaseRef.Meter != 4)
+                return string.Empty;
+
+            if (Math.Abs(phaseRef.TimeMs - tempos[0].TimeMs) > 0.5
+                || Math.Abs(phaseRef.BeatLengthMs - tempos[0].BeatLengthMs) > 0.01)
+            {
+                feat = await analyser.ExtractBeatFeaturesAsync(audio, phaseRef.TimeMs, phaseRef.BeatLengthMs).ConfigureAwait(false);
+
+                if (feat is null)
+                    return string.Empty;
+            }
+
+            // 主速度段终点：下一条红线（留出与 compare() 相同的口径 —— 只在段内贴标签）。
+            double segEnd = tempos.Where(t => t.TimeMs > phaseRef.TimeMs + 1)
+                                  .Select(t => t.TimeMs)
+                                  .DefaultIfEmpty(duration)
+                                  .Min();
+
+            await writeBeatFeatureCsvAsync(Path.Combine(outputDirectory, sanitizeFileName(name) + ".csv"),
+                name, feat, truthPhase: phaseRef.TimeMs, beatLengthMs: phaseRef.BeatLengthMs,
+                truthBpm, segEnd, gridShiftHalf: false).ConfigureAwait(false);
+
+            // 半拍偏移网格 = 全部落在拍间，作"非拍点"负样本。
+            BeatAnalyser.BeatGridFeatures? neg = await analyser.ExtractBeatFeaturesAsync(audio,
+                phaseRef.TimeMs + phaseRef.BeatLengthMs / 2, phaseRef.BeatLengthMs).ConfigureAwait(false);
+
+            if (neg is not null)
+                await writeBeatFeatureCsvAsync(Path.Combine(outputDirectory, sanitizeFileName(name) + ".half.csv"),
+                    name, neg, truthPhase: phaseRef.TimeMs, beatLengthMs: phaseRef.BeatLengthMs,
+                    truthBpm, segEnd, gridShiftHalf: true).ConfigureAwait(false);
+
+            return name;
+        }
+
+        /// <summary>评测网格导出：网格取分析原生结果（小节修正前），表头带真值与锚点拍位。</summary>
+        private static async Task<string> exportEvalGridAsync(string name, MapTruth truth, byte[] audio,
+                                                              string outputDirectory)
+        {
+            BeatAnalysisDetails details = await new BeatAnalyser().AnalyseDetailedAsync(audio).ConfigureAwait(false);
+
+            if (details.RawBpm <= 0)
+                return string.Empty;
+
+            double detectedBeatLengthMs = 60000.0 / details.RawBpm;
+            BeatAnalyser.BeatGridFeatures? feat = await new BeatAnalyser()
+                .ExtractBeatFeaturesAsync(audio, details.RawBeatPhaseMs, detectedBeatLengthMs).ConfigureAwait(false);
+
+            if (feat is null)
+                return string.Empty;
+
+            double truthBpm = dominantBpm(truth.TempoPoints, details.Duration);
+            TimingPoint phaseRef = truth.TempoPoints
+                .FirstOrDefault(t => Math.Abs(60000.0 / t.BeatLengthMs - truthBpm) < 0.5, truth.TempoPoints[0]);
+
+            double segEnd = truth.TempoPoints.Where(t => t.TimeMs > phaseRef.TimeMs + 1)
+                                             .Select(t => t.TimeMs)
+                                             .DefaultIfEmpty(details.Duration + 1000)
+                                             .Min();
+
+            await writeBeatFeatureCsvAsync(Path.Combine(outputDirectory, sanitizeFileName(name) + ".csv"),
+                name, feat, truthPhase: phaseRef.TimeMs, beatLengthMs: phaseRef.BeatLengthMs,
+                truthBpm, segEnd, gridShiftHalf: false,
+                detectedBpm: details.RawBpm, gridPhaseMs: details.RawBeatPhaseMs).ConfigureAwait(false);
+
+            return name;
+        }
+
+        private static async Task writeBeatFeatureCsvAsync(string outputPath, string song, BeatAnalyser.BeatGridFeatures feat,
+                                                           double truthPhase, double beatLengthMs, double truthBpm,
+                                                           double segEnd, bool gridShiftHalf,
+                                                           double? detectedBpm = null, double? gridPhaseMs = null)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("# beatfeat v1");
+            sb.AppendLine($"# song={song}");
+            sb.AppendLine("# features=chroma0..11,band0..6,onset");
+            sb.AppendLine("# t0=" + FormatInvariant(truthPhase));
+            sb.AppendLine("# beatlen=" + FormatInvariant(beatLengthMs));
+            sb.AppendLine("# truth_bpm=" + FormatInvariant(truthBpm));
+            sb.AppendLine("# segend=" + FormatInvariant(segEnd));
+            sb.AppendLine("# anchor=" + feat.AnchorOffset);
+
+            if (gridShiftHalf)
+                sb.AppendLine("# grid_shift=half");
+
+            if (detectedBpm is not null)
+                sb.AppendLine("# detected_bpm=" + FormatInvariant(detectedBpm.Value));
+
+            if (gridPhaseMs is not null)
+                sb.AppendLine("# grid_phase=" + FormatInvariant(gridPhaseMs.Value));
+
+            sb.AppendLine("time_ms," + string.Join(",", Enumerable.Range(0, 20).Select(i => $"f{i}")));
+
+            for (int m = 0; m < feat.Features.Count; m++)
+            {
+                sb.Append(FormatInvariant(feat.BeatTimesMs[m]));
+
+                double[] f = feat.Features[m];
+
+                for (int k = 0; k < f.Length; k++)
+                    sb.Append(',').Append(FormatInvariant(f[k]));
+
+                sb.AppendLine();
+            }
+
+            await File.WriteAllTextAsync(outputPath, sb.ToString()).ConfigureAwait(false);
+        }
+
+        private static string FormatInvariant(double value) => value.ToString("R", CultureInfo.InvariantCulture);
 
         /// <summary>跑完整个目录并写出报告，返回报告文本。</summary>
         /// <param name="directory">存放 .osz 的目录。</param>
@@ -499,7 +714,10 @@ namespace OsuPlayer.Game.Music.BeatSync
                     || !int.TryParse(parts[7], NumberStyles.Integer, CultureInfo.InvariantCulture, out int effects))
                     continue;
 
-                points.Add(new TimingPoint(time, beatLength, parts[6].Trim() == "1", (effects & 1) == 1));
+                int meter = int.TryParse(parts[2], NumberStyles.Integer, CultureInfo.InvariantCulture, out int parsedMeter)
+                            && parsedMeter > 0 ? parsedMeter : 4;
+
+                points.Add(new TimingPoint(time, beatLength, parts[6].Trim() == "1", (effects & 1) == 1, meter));
             }
 
             ZipArchiveEntry? audioEntry =

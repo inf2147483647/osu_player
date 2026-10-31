@@ -241,7 +241,8 @@ namespace OsuPlayer.Game.Graphics.NowPlaying
         {
             base.Update();
 
-            if (player.IsPlaying.Value)
+            // 匀速模式才自转；「跟随歌词」模式由主界面按歌词扇形滚动驱动，两种旋转不叠加。
+            if (player.CoverRotation.Value == CoverRotationMode.Constant && player.IsPlaying.Value)
                 rotationContainer.Rotation += (float)(360 * Time.Elapsed / rotation_period_ms);
 
             // osu! OsuLogo.Update: the disc shrinks slightly while the track is loud, damped smoothly.

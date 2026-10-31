@@ -73,6 +73,17 @@ namespace OsuPlayer.Game
 
         private readonly string? kiaiExportDirectory;
 
+        /// <summary>
+        /// 下拍模型特征导出（<c>--dump-beat-train=&lt;目录&gt;</c> / <c>--dump-beat-eval=&lt;目录&gt;</c>）：
+        /// 用 <c>--train-beatmaps</c> 指定的谱面导出逐拍特征 CSV（训练 = 真值网格 + 半拍负样本；
+        /// 评测 = 原生检测网格），可选 <c>--names-filter=&lt;文件&gt;</c> 只导名单内的谱面。写完退出。
+        /// </summary>
+        private readonly string? dumpBeatTrainDirectory;
+
+        private readonly string? dumpBeatEvalDirectory;
+
+        private readonly string? beatNamesFilterPath;
+
         /// <summary>BPM 评测模式（<c>--eval-bpm &lt;目录&gt;</c>）：递归评测该目录下的 *.wav，
         /// 真值取同名 .bpm，或用 <c>--bpm-labels &lt;目录&gt;</c> 指定。见 <see cref="BeatmapTraining.EvaluateBpmAsync"/>。</summary>
         private readonly string? bpmEvalDirectory;
@@ -109,6 +120,18 @@ namespace OsuPlayer.Game
                     kiaiExportDirectory = args[i + 1];
                 else if (args[i].StartsWith("--export-kiai-data=", StringComparison.Ordinal))
                     kiaiExportDirectory = args[i]["--export-kiai-data=".Length..];
+                else if (args[i] == "--dump-beat-train" && i + 1 < args.Length)
+                    dumpBeatTrainDirectory = args[i + 1];
+                else if (args[i].StartsWith("--dump-beat-train=", StringComparison.Ordinal))
+                    dumpBeatTrainDirectory = args[i]["--dump-beat-train=".Length..];
+                else if (args[i] == "--dump-beat-eval" && i + 1 < args.Length)
+                    dumpBeatEvalDirectory = args[i + 1];
+                else if (args[i].StartsWith("--dump-beat-eval=", StringComparison.Ordinal))
+                    dumpBeatEvalDirectory = args[i]["--dump-beat-eval=".Length..];
+                else if (args[i] == "--names-filter" && i + 1 < args.Length)
+                    beatNamesFilterPath = args[i + 1];
+                else if (args[i].StartsWith("--names-filter=", StringComparison.Ordinal))
+                    beatNamesFilterPath = args[i]["--names-filter=".Length..];
                 else if (args[i] == "--eval-bpm" && i + 1 < args.Length)
                     bpmEvalDirectory = args[i + 1];
                 else if (args[i].StartsWith("--eval-bpm=", StringComparison.Ordinal))
@@ -203,6 +226,8 @@ namespace OsuPlayer.Game
             {
                 if (kiaiExportDirectory is not null)
                     _ = runKiaiExportAsync();
+                else if (dumpBeatTrainDirectory is not null || dumpBeatEvalDirectory is not null)
+                    _ = runBeatDumpAsync();
                 else
                     _ = runTrainingAsync();
 
@@ -425,6 +450,29 @@ namespace OsuPlayer.Game
             catch (Exception e)
             {
                 Console.Error.WriteLine($"kiai 特征导出失败：{e}");
+                Console.Error.Flush();
+            }
+            finally
+            {
+                Schedule(() => Host.Exit());
+            }
+        }
+
+        private async Task runBeatDumpAsync()
+        {
+            try
+            {
+                string summary = await BeatmapTraining.ExportBeatFeaturesAsync(
+                    trainingDirectory!,
+                    dumpBeatTrainDirectory ?? dumpBeatEvalDirectory!,
+                    evalGrid: dumpBeatEvalDirectory is not null,
+                    beatNamesFilterPath).ConfigureAwait(false);
+                Console.WriteLine(summary);
+                Console.Out.Flush();
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"拍特征导出失败：{e}");
                 Console.Error.Flush();
             }
             finally

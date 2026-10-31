@@ -81,6 +81,13 @@ namespace OsuPlayer.Game.Music
         /// 由 <c>ExternalOverlayBridge</c> 改成不展开而已。
         /// </summary>
         public BindableBool FullscreenEffects { get; } = new(true);
+
+        /// <summary>
+        /// 圆饼旋转方式：跟随歌词（默认）或匀速。设置页的下拉框写它，
+        /// 主界面据此在「按歌词滚动角度转动」与「固定周期匀速自转」之间切换（两者不会叠加）。
+        /// </summary>
+        public Bindable<CoverRotationMode> CoverRotation { get; } = new(CoverRotationMode.FollowLyrics);
+
         public Bindable<string> StatusText { get; } = new(string.Empty);
         public Bindable<string> CurrentCover { get; } = new(string.Empty);
 
@@ -346,6 +353,7 @@ namespace OsuPlayer.Game.Music
             DebugMode.BindValueChanged(_ => queueStateSave());
             ShowFps.BindValueChanged(_ => queueStateSave());
             FullscreenEffects.BindValueChanged(_ => queueStateSave());
+            CoverRotation.BindValueChanged(_ => queueStateSave());
             Liked.BindCollectionChanged((_, _) => queueStateSave());
             History.BindCollectionChanged((_, _) => queueStateSave());
             LocalTracks.BindCollectionChanged((_, _) => queueStateSave());
@@ -965,6 +973,7 @@ namespace OsuPlayer.Game.Music
                     ["debugMode"] = DebugMode.Value,
                     ["showFps"] = ShowFps.Value,
                     ["fullscreenEffects"] = FullscreenEffects.Value,
+                    ["coverRotation"] = CoverRotation.Value.ToString(),
                     ["liked"] = new JArray(Liked.Select(toJson)),
                     ["history"] = new JArray(History.Select(toJson)),
                     ["local"] = new JArray(LocalTracks.Select(toJson)),
@@ -1037,6 +1046,9 @@ namespace OsuPlayer.Game.Music
                 DebugMode.Value = state["debugMode"]?.Value<bool>() ?? DebugMode.Value;
                 ShowFps.Value = state["showFps"]?.Value<bool>() ?? ShowFps.Value;
                 FullscreenEffects.Value = state["fullscreenEffects"]?.Value<bool>() ?? FullscreenEffects.Value;
+                CoverRotation.Value = Enum.TryParse(state["coverRotation"]?.ToString(), out CoverRotationMode coverRotation)
+                    ? coverRotation
+                    : CoverRotation.Value;
 
                 string quality = state["quality"]?.ToString() ?? Quality.Value;
                 Quality.Value = quality;

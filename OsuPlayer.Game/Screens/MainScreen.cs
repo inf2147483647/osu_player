@@ -51,6 +51,12 @@ namespace OsuPlayer.Game.Screens
 
         private MenuSideFlashes sideFlashes = null!;
         private KiaiFountains kiaiFountains = null!;
+        private RadialLyrics radialLyrics = null!;
+
+        /// <summary>圆饼外层容器：歌词扇形滚多少度，它就跟着转多少度。</summary>
+        private Container discHolder = null!;
+
+        private CoverImageBackground background = null!;
 
         /// <summary>
         /// 把这两个特效真正播放的动画转发给透明全屏特效子进程（播放器最小化时铺在桌面上）。
@@ -80,19 +86,15 @@ namespace OsuPlayer.Game.Screens
 
             InternalChildren = new Drawable[]
             {
-                // Background.
-                new Box
-                {
-                    RelativeSizeAxes = Axes.Both,
-                    Colour = new Color4(15, 15, 23, 255),
-                },
+                // Background — 当前歌曲封面（「填充」铺满 + 模糊），切歌 1s 淡入淡出。
+                background = new CoverImageBackground(),
 
                 // osu! beat-synced effects (behind the content).
                 sideFlashes = new MenuSideFlashes(),
                 kiaiFountains = new KiaiFountains(),
 
                 // Main record disc.
-                new Container
+                discHolder = new Container
                 {
                     Anchor = Anchor.TopLeft,
                     Origin = Anchor.Centre,
@@ -102,15 +104,16 @@ namespace OsuPlayer.Game.Screens
                 },
 
                 // Radial lyrics fan.
-                new RadialLyrics(),
+                radialLyrics = new RadialLyrics(),
 
-                // Title / artist block above-right of the disc. Wrapped in copy targets so a
-                // right-click or a touch long-press offers 「复制歌名」/「复制歌手」.
+                // Title / artist block: 水平居中于窗口（设计稿里圆饼偏左，文字块是居中的）。
+                // Wrapped in copy targets so a right-click or a touch long-press offers
+                // 「复制歌名」/「复制歌手」.
                 new CopyContextTarget
                 {
-                    Anchor = Anchor.TopLeft,
+                    Anchor = Anchor.TopCentre,
                     Origin = Anchor.TopCentre,
-                    Position = new Vector2(UiLayout.TitleCentreX, UiLayout.TitleY),
+                    Position = new Vector2(0, UiLayout.TitleY),
                     AutoSizeAxes = Axes.Both,
                     ItemText = "复制歌名",
                     ContentProvider = () => player.CurrentSong.Value?.Name,
@@ -123,9 +126,9 @@ namespace OsuPlayer.Game.Screens
                 },
                 new CopyContextTarget
                 {
-                    Anchor = Anchor.TopLeft,
+                    Anchor = Anchor.TopCentre,
                     Origin = Anchor.TopCentre,
-                    Position = new Vector2(UiLayout.TitleCentreX, UiLayout.ArtistY),
+                    Position = new Vector2(0, UiLayout.ArtistY),
                     AutoSizeAxes = Axes.Both,
                     ItemText = "复制歌手",
                     ContentProvider = () => player.CurrentSong.Value?.Artist,
@@ -139,9 +142,9 @@ namespace OsuPlayer.Game.Screens
                 // 状态行（BPM / 首拍 / kiai）同时是 timing 编辑弹窗的入口。
                 new OsuClickableContainer
                 {
-                    Anchor = Anchor.TopLeft,
+                    Anchor = Anchor.TopCentre,
                     Origin = Anchor.TopCentre,
-                    Position = new Vector2(UiLayout.TitleCentreX, UiLayout.ArtistY + 38),
+                    Position = new Vector2(0, UiLayout.ArtistY + 38),
                     AutoSizeAxes = Axes.Both,
                     Action = openTimingEditor,
                     Child = statusText = new SpriteText
@@ -166,6 +169,17 @@ namespace OsuPlayer.Game.Screens
 
             // 把特效动画接给桌面全屏特效子进程（本身无视觉，挂进树只为跟随屏幕生命周期）。
             overlayBridge.Attach(sideFlashes, kiaiFountains);
+
+            // 歌词扇形滚过多少度，圆饼就跟着转多少度（同一时长与缓动，所以两者同步）。
+            // 只在「跟随歌词」模式下生效；「匀速」模式由 NowPlayingDisc 自己转，两者不叠加。
+            radialLyrics.FanScrolled += angle =>
+            {
+                if (player.CoverRotation.Value != CoverRotationMode.FollowLyrics)
+                    return;
+
+                discHolder.RotateTo(angle, RadialLyrics.ScrollDuration, RadialLyrics.ScrollEasing);
+            };
+
             AddInternal(overlayBridge);
         }
 

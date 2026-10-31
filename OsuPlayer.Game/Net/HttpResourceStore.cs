@@ -30,18 +30,23 @@ namespace OsuPlayer.Game.Net
         /// <summary>音频流的超时（整首下载，留足时间）。</summary>
         private static readonly TimeSpan audio_timeout = TimeSpan.FromSeconds(60);
 
-        /// <summary>同一个 URL 失败后多久内不再重试（避免框架反复请求、通知刷屏）。</summary>
-        private static readonly TimeSpan failure_retry_delay = TimeSpan.FromSeconds(60);
+        /// <summary>封面下载失败后的冷却时间：短一些，让列表里的封面能靠重试补回来。</summary>
+        private static readonly TimeSpan image_failure_retry_delay = TimeSpan.FromSeconds(10);
+
+        /// <summary>音频下载失败后的冷却时间（整首下载，失败一次就先别再试）。</summary>
+        private static readonly TimeSpan audio_failure_retry_delay = TimeSpan.FromSeconds(60);
 
         /// <summary>
         /// 同时进行的封面下载上限。框架的文本/封面加载走同步 <see cref="GetStream"/>，
         /// 每个请求都会占住一个线程池线程；列表里几十个封面一起进来会把线程池吃光，
-        /// 连音频/接口请求都排不上队（"连接瘫痪"的主因之一）。超出的封面直接按缺失处理，
-        /// 等滚动/重绘时再加载，保证播放链路永远有线程可用。
+        /// 连音频/接口请求都排不上队。
         /// </summary>
         private const int image_concurrency = 6;
 
-        private int image_inflight;
+        /// <summary>等一个封面并发槽位的最长时间；超时按缺失处理，由 <see cref="OnlineSprite"/> 稍后重试。</summary>
+        private static readonly TimeSpan image_slot_wait = TimeSpan.FromSeconds(3);
+
+        private readonly SemaphoreSlim image_slots = new(image_concurrency, image_concurrency);
 
         private readonly HttpClient http;
 
@@ -87,11 +92,17 @@ namespace OsuPlayer.Game.Net
             if (isRecentlyFailed(name))
                 return null!;
 
-            // 同步加载会占线程：超过并发上限的封面直接放弃，保证音频/接口线程不被挤占。
-            if (image && Interlocked.Increment(ref image_inflight) > image_concurrency)
+            // 超过并发上限时排队等一个槽位（最多等 3 秒），而不是直接放弃 ——
+            // 之前直接返回 null，列表一次滚出几十个封面时大部分会被永久丢掉，
+            // 表现就是"很多歌的封面一直加载不出来"。
+            bool acquired = false;
+
+            if (image)
             {
-                Interlocked.Decrement(ref image_inflight);
-                return null!;
+                acquired = image_slots.Wait(image_slot_wait);
+
+                if (!acquired)
+                    return null!;
             }
 
             // TrackBass wraps the stream in an AsyncBufferStream that requires a seekable stream
@@ -113,8 +124,8 @@ namespace OsuPlayer.Game.Net
             }
             finally
             {
-                if (image)
-                    Interlocked.Decrement(ref image_inflight);
+                if (acquired)
+                    image_slots.Release();
             }
         }
 
@@ -173,8 +184,13 @@ namespace OsuPlayer.Game.Net
         public IEnumerable<string> GetAvailableResources() => Enumerable.Empty<string>();
 
         private bool isRecentlyFailed(string name)
-            => recent_failures.TryGetValue(name, out DateTime failedAt)
-               && DateTime.UtcNow - failedAt < failure_retry_delay;
+        {
+            if (!recent_failures.TryGetValue(name, out DateTime failedAt))
+                return false;
+
+            TimeSpan delay = isImage(name) ? image_failure_retry_delay : audio_failure_retry_delay;
+            return DateTime.UtcNow - failedAt < delay;
+        }
 
         private static bool isImage(string name)
         {
@@ -194,6 +210,7 @@ namespace OsuPlayer.Game.Net
 
         public void Dispose()
         {
+            image_slots.Dispose();
             http.Dispose();
         }
     }

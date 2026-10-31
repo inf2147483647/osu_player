@@ -92,6 +92,26 @@ namespace OsuPlayer.Game.Graphics.NowPlaying
         private const double fade_duration = 320;
         private const Easing transition_easing = Easing.OutQuint;
 
+        /// <summary>扇形滚动到新的一行用的时长 / 缓动；圆饼跟随转动用同一套，保证两者同步。</summary>
+        public const double ScrollDuration = transition_duration;
+        public const Easing ScrollEasing = transition_easing;
+
+        /// <summary>
+        /// 扇形整体滚动的累计角度（度）。每滚过一行就抛出一次累计值 ——
+        /// 圆饼据此转过同样的角度，所以「歌词滚多少、圆饼转多少」。
+        /// </summary>
+        public event Action<float>? FanScrolled;
+
+        /// <summary>上一次布局时每行相对焦点的角度，用来算这次滚了多少度。</summary>
+        private Dictionary<int, float> layoutAngles = new();
+        private Dictionary<int, float> nextLayoutAngles = new();
+
+        /// <summary>上一次布局的焦点行；-1 表示还没唱到第一句（或刚清空）。</summary>
+        private int lastLayoutFocus = -1;
+
+        /// <summary>扇形累计滚过的角度。</summary>
+        private float fanAngle;
+
         [BackgroundDependencyLoader]
         private void load()
         {
@@ -365,12 +385,15 @@ namespace OsuPlayer.Game.Graphics.NowPlaying
             int active = player.ActiveLyricIndex.Value;
             int focus = active < 0 ? -1 : Math.Clamp(browseIndex ?? active, 0, player.Lyrics.Count - 1);
 
+            nextLayoutAngles.Clear();
+
             // 焦点槽位允许为空（还没唱到第一句时它只是「等待区」的起点），此时高度按 0 计。
             float focalHeight = 0;
 
             if (lines.TryGetValue(focus, out LyricLine? focal))
             {
                 focal.Place(0);
+                nextLayoutAngles[focus] = 0;
                 focalHeight = focal.VisualHeight;
             }
 
@@ -385,6 +408,7 @@ namespace OsuPlayer.Game.Graphics.NowPlaying
 
                 angle += stepFor(previousHeight, line.VisualHeight);
                 line.Place(angle);
+                nextLayoutAngles[i] = angle;
                 previousHeight = line.VisualHeight;
             }
 
@@ -399,8 +423,59 @@ namespace OsuPlayer.Game.Graphics.NowPlaying
 
                 angle -= stepFor(line.VisualHeight, previousHeight);
                 line.Place(angle);
+                nextLayoutAngles[i] = angle;
                 previousHeight = line.VisualHeight;
             }
+
+            trackFanScroll(focus);
+        }
+
+        /// <summary>
+        /// 焦点行变了 = 扇形滚过了一行：算出整片扇形这一帧转过的角度并通知圆饼。
+        /// 用「同一行在前后两次布局里的角度差」来量，天然等于扇形整体的旋转量，
+        /// 与行高、折行导致的夹角变化一致。
+        /// </summary>
+        private void trackFanScroll(int focus)
+        {
+            if (focus == lastLayoutFocus)
+            {
+                swapAngles();
+                return;
+            }
+
+            int previousFocus = lastLayoutFocus;
+            lastLayoutFocus = focus;
+
+            float delta = 0;
+            bool measured = false;
+
+            foreach (var pair in nextLayoutAngles)
+            {
+                if (!layoutAngles.TryGetValue(pair.Key, out float before))
+                    continue;
+
+                delta = pair.Value - before;
+                measured = true;
+                break;
+            }
+
+            // 焦点一次跳得很远（点歌词跳转 / 拖动进度条）：新旧画面没有重叠行，按最小夹角估算，
+            // 方向与相邻滚动一致（焦点前进 → 扇形逆时针 → 角度为负）。
+            if (!measured && previousFocus >= 0 && focus >= 0)
+                delta = -(focus - previousFocus) * min_angular_step;
+
+            swapAngles();
+
+            if (Math.Abs(delta) < 0.01f)
+                return;
+
+            fanAngle += delta;
+            FanScrolled?.Invoke(fanAngle);
+        }
+
+        private void swapAngles()
+        {
+            (layoutAngles, nextLayoutAngles) = (nextLayoutAngles, layoutAngles);
         }
 
         /// <summary>
@@ -429,6 +504,10 @@ namespace OsuPlayer.Game.Graphics.NowPlaying
             }
 
             lines.Clear();
+
+            // 换歌后焦点从「没有」重新开始，不能拿上一首的角度去算滚动量（否则圆饼会莫名跳一下）。
+            layoutAngles.Clear();
+            lastLayoutFocus = -1;
         }
 
         /// <summary>
@@ -449,6 +528,11 @@ namespace OsuPlayer.Game.Graphics.NowPlaying
 
             /// <summary>目标缩放（焦点行 1，其余行按字号比例），用来估算文字块的实际高度。</summary>
             private float targetScale = 1f;
+
+            /// <summary>本行是否是「播放进度所在」的那一行。</summary>
+            private bool isPlaying;
+
+            public bool IsPlaying => isPlaying;
 
             /// <summary>当前实际的旋转角度，供离场动画接着往外转。</summary>
             public float CurrentAngle => Rotation;
@@ -511,6 +595,7 @@ namespace OsuPlayer.Game.Graphics.NowPlaying
             /// <param name="isPlaying">Whether this is the line playback is currently on.</param>
             public void Apply(int distance, bool isPlaying)
             {
+                this.isPlaying = isPlaying;
                 bool isFocal = distance == 0;
 
                 // The line playback is on is always the accent colour, even while the fan is browsed

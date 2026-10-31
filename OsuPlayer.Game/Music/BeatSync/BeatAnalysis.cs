@@ -36,5 +36,7 @@ namespace OsuPlayer.Game.Music.BeatSync
         int FrameCount,
         double Duration,
         double HopRate,
-        string? EngineBRejectReason);
+        string? EngineBRejectReason,
+        double RawBpm,
+        double RawBeatPhaseMs);
 }

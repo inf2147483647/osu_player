@@ -9,11 +9,11 @@
     <!-- Same architecture as the FemboyTest osu!-design reference: real osu! controls, fonts
          (Torus/Noto/Venera), UI samples and cursor come from the shipped osu! packages
          instead of being redrawn on top of the framework. -->
-    <PackageReference Include="ppy.osu.Game" Version="2026.916.0" />
-    <PackageReference Include="ppy.osu.Framework" Version="2026.921.0" />
+    <PackageReference Include="ppy.osu.Game" Version="2026.1026.0" />
+    <PackageReference Include="ppy.osu.Framework" Version="2026.1030.0" />
     <!-- Ships the pre-baked Noto glyph atlases (CJK/kana/Hangul/Thai) that osu!framework requires.
          osu!framework cannot rasterise TTF/OTF at runtime, so fonts must come pre-baked. -->
-    <PackageReference Include="ppy.osu.Game.Resources" Version="2026.921.0" />
+    <PackageReference Include="ppy.osu.Game.Resources" Version="2026.1021.0" />
     <!-- KuGou API JSON parsing; version pinned to match the osu!framework dependency closure. -->
     <PackageReference Include="Newtonsoft.Json" Version="13.0.4" />
     <!-- ONNX 模式：在本机 CPU 上跑 Beat This!（JKU，ISMIR 2024，MIT）的节拍/重拍模型，

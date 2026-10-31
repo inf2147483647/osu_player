@@ -160,16 +160,13 @@ namespace OsuPlayer.Game.Music.BeatSync
                 byte[] audio;
                 try
                 {
-                    // 本地曲目当前流地址就是磁盘路径，直接读文件即可。
-                    audio = File.Exists(url)
-                        ? await File.ReadAllBytesAsync(url).ConfigureAwait(false)
-                        : await http.GetByteArrayAsync(url).ConfigureAwait(false);
+                    audio = await downloadAudioAsync(url).ConfigureAwait(false);
 
                     AppLog.Beat.Add($"分析音频就绪：{audio.Length / 1024}KB，{sw.ElapsedMilliseconds}ms");
                 }
                 catch (Exception e)
                 {
-                    AppLog.Beat.Add($"分析音频下载失败：{AppLog.SafeUrl(url)}，{sw.ElapsedMilliseconds}ms", LogLevel.Error, e);
+                    AppLog.Beat.Add($"分析音频下载失败：{AppLog.SafeUrl(url)}，{sw.ElapsedMilliseconds}ms，{e.GetType().Name}", LogLevel.Error, e);
                     Schedule(() =>
                     {
                         if (mySerial != serial)
@@ -399,6 +396,27 @@ namespace OsuPlayer.Game.Music.BeatSync
                                    + (statusSuffix is null ? string.Empty : $"　{statusSuffix}");
             AppLog.Beat.Add($"节拍结果已应用到特效（{source}）：BPM {result.Bpm:0}，首拍 {analysed.FirstBeatMs:0.#}ms，"
                             + $"高潮段 {result.KiaiSections.Count} 个");
+        }
+
+        /// <summary>
+        /// 取分析用的音频字节：本地曲目当前流地址就是磁盘路径，直接读文件；在线曲目走 HTTP 下载。
+        /// http:// 失败时换 https:// 重试一次 —— KuGou 部分域名的 http 直链在某些网络/系统栈下
+        /// 连不上，而签名 URL 的签名只覆盖路径与参数，换协议不影响鉴权。
+        /// </summary>
+        private static async Task<byte[]> downloadAudioAsync(string url)
+        {
+            if (File.Exists(url))
+                return await File.ReadAllBytesAsync(url).ConfigureAwait(false);
+
+            try
+            {
+                return await http.GetByteArrayAsync(url).ConfigureAwait(false);
+            }
+            catch (Exception e) when (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+            {
+                AppLog.Beat.Add($"分析音频 HTTP 下载失败（{e.GetType().Name}：{e.Message}），改用 HTTPS 重试");
+                return await http.GetByteArrayAsync("https://" + url["http://".Length..]).ConfigureAwait(false);
+            }
         }
 
         private static HttpClient createHttpClient()
