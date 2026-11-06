@@ -15,6 +15,7 @@ using osu.Framework.Threading;
 using osu.Game.Configuration;
 using osu.Game.Graphics;
 using osu.Game.Graphics.Containers;
+using osu.Game.Graphics.Sprites;
 using osu.Game.Graphics.UserInterface;
 using osu.Game.Graphics.UserInterfaceV2;
 using osu.Game.Input.Bindings;
@@ -579,8 +580,27 @@ namespace OsuPlayer.Game.Screens.Components
 
         // -------- Search --------
 
+        private SpriteText? searchNotice;
+
         private void buildSearch()
         {
+            // 返回上一级时这个页面会被重新构建，而 contentHost 里还留着搜索结果；
+            // 不先清空的话搜索框/历史会叠在结果列表上面。
+            contentHost.Clear();
+
+            searchBox = new OsuTextBox
+            {
+                RelativeSizeAxes = Axes.X,
+                PlaceholderText = "搜索歌曲、歌手，回车播放",
+            };
+
+            searchNotice = new SpriteText
+            {
+                Font = OsuFont.GetFont(size: 15),
+                Colour = Color4.OrangeRed,
+                Alpha = 0,
+            };
+
             contentHost.Add(new FillFlowContainer
             {
                 RelativeSizeAxes = Axes.X,
@@ -589,24 +609,128 @@ namespace OsuPlayer.Game.Screens.Components
                 Spacing = new Vector2(0, 10),
                 Children = new Drawable[]
                 {
-                    searchBox = new OsuTextBox
-                    {
-                        RelativeSizeAxes = Axes.X,
-                        PlaceholderText = "搜索歌曲、歌手，回车播放",
-                    },
+                    searchBox,
+                    searchNotice,
+                    buildSearchHistory(),
                 },
             });
 
-            searchBox.OnCommit += (_, _) =>
+            // 输入阶段就抹掉敏感词，避免它出现在输入框里；粘贴命中时同样处理。
+            searchBox.Current.BindValueChanged(e =>
             {
-                string keyword = searchBox.Text;
-                if (string.IsNullOrWhiteSpace(keyword)) return;
-                AppLog.Ui.Add($"提交搜索：“{keyword.Trim()}”", LogLevel.Important);
-                pushNavigation($"搜索：{keyword.Trim()}", buildSearch);
-                loadSongList(() => player.SearchAsync(keyword.Trim()));
-            };
+                string text = e.NewValue ?? string.Empty;
+                string filtered = stripBlockedTerms(text);
+
+                if (!string.Equals(text, filtered, StringComparison.Ordinal))
+                {
+                    searchBox.Text = filtered;
+                    showSearchNotice("该关键词已被拦截，请换个关键词。");
+                    return;
+                }
+
+                if (searchNotice.Alpha > 0)
+                    searchNotice.FadeOut(160);
+            });
+
+            searchBox.OnCommit += (_, _) => submitSearch(searchBox.Text);
 
             Schedule(() => GetContainingFocusManager()?.ChangeFocus(searchBox));
+        }
+
+        /// <summary>搜索栏下方的历史记录：点一条即可重新搜索。</summary>
+        private Drawable buildSearchHistory()
+        {
+            var flow = new FillFlowContainer<Drawable>
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 4),
+            };
+
+            IReadOnlyList<string> history = player.SearchHistory;
+
+            if (history.Count == 0)
+            {
+                flow.Add(new SpriteText
+                {
+                    Font = OsuFont.GetFont(size: 16),
+                    Colour = new Color4(120, 120, 132, 255),
+                    Text = "暂无搜索历史",
+                });
+
+                return flow;
+            }
+
+            flow.Add(new SpriteText
+            {
+                Font = OsuFont.GetFont(size: 16),
+                Colour = new Color4(150, 150, 165, 255),
+                Text = "搜索历史",
+            });
+
+            foreach (string keyword in history)
+            {
+                string captured = keyword;
+
+                flow.Add(new OsuClickableContainer
+                {
+                    RelativeSizeAxes = Axes.X,
+                    Height = 30,
+                    Action = () =>
+                    {
+                        searchBox.Text = captured;
+                        submitSearch(captured);
+                    },
+                    Child = new TruncatingSpriteText
+                    {
+                        Text = captured,
+                        Font = OsuFont.GetFont(size: 18),
+                        Colour = new Color4(210, 210, 220, 255),
+                        RelativeSizeAxes = Axes.X,
+                        Padding = new MarginPadding { Left = 2, Vertical = 4 },
+                    },
+                });
+            }
+
+            return flow;
+        }
+
+        private void submitSearch(string raw)
+        {
+            string keyword = raw.Trim();
+
+            if (keyword.Length == 0)
+                return;
+
+            if (MusicPlayer.ContainsBlockedKeyword(keyword))
+            {
+                AppLog.Ui.Add($"搜索关键词被拦截：“{keyword}”", LogLevel.Important);
+                showSearchNotice("该关键词已被拦截，请换个关键词。");
+                return;
+            }
+
+            AppLog.Ui.Add($"提交搜索：“{keyword}”", LogLevel.Important);
+            player.RecordSearch(keyword);
+            pushNavigation($"搜索：{keyword}", buildSearch);
+            loadSongList(() => player.SearchAsync(keyword));
+        }
+
+        private static string stripBlockedTerms(string text)
+        {
+            foreach (string term in MusicPlayer.BlockedKeywords)
+                text = text.Replace(term, string.Empty, StringComparison.OrdinalIgnoreCase);
+
+            return text;
+        }
+
+        private void showSearchNotice(string message)
+        {
+            if (searchNotice is null)
+                return;
+
+            searchNotice.Text = message;
+            searchNotice.FadeIn(120);
         }
 
         // -------- 在线搜索歌词 --------
@@ -624,6 +748,8 @@ namespace OsuPlayer.Game.Screens.Components
                 setPlaceholder("当前没有正在播放的曲目。");
                 return;
             }
+
+            contentHost.Clear();
 
             var box = new OsuTextBox
             {

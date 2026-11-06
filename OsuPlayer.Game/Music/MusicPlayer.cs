@@ -245,6 +245,9 @@ namespace OsuPlayer.Game.Music
         /// <summary>恢复登录时因平台身份变更需要提示的文案，延后到 LoadComplete 弹出。</summary>
         private string? pendingLoginNotice;
 
+        /// <summary>凭证已被网关判定失效并清过一次，避免每首歌都重复登出与弹提示。</summary>
+        private bool loginInvalidated;
+
         /// <summary>
         /// 网关要求安全验证时的说明（errcode 20028）。酷狗风控会对播放请求下发人机验证事件，
         /// 完成验证前该账号的线上播放都会被拒；这里记住一次，避免对每首歌反复发请求继续触发风控。
@@ -302,6 +305,21 @@ namespace OsuPlayer.Game.Music
         /// 所以条数再多也不会栈溢出；会先耗尽的是磁盘与内存，不是调用栈。</para>
         /// </summary>
         private const int history_max = 5000;
+
+        /// <summary>搜索历史最多保留的条数（纯短字符串，不需要像播放历史那样控制体积）。</summary>
+        private const int search_history_max = 10;
+
+        private readonly List<string> searchHistory = new();
+
+        /// <summary>最近的搜索关键词，最新的在前；由搜索面板展示并随播放状态持久化。</summary>
+        public IReadOnlyList<string> SearchHistory => searchHistory;
+
+        /// <summary>搜索与点歌共用的敏感词：输入阶段会被抹掉，歌名命中时直接拒绝播放。</summary>
+        public static readonly string[] BlockedKeywords = { "男娘" };
+
+        /// <summary>文本里是否含有被拦截的关键词（不区分大小写）。</summary>
+        public static bool ContainsBlockedKeyword(string text)
+            => BlockedKeywords.Any(term => text.Contains(term, StringComparison.OrdinalIgnoreCase));
 
         // -------- 播放状态持久化 --------
 
@@ -412,11 +430,87 @@ namespace OsuPlayer.Game.Music
             saveState();
         }
 
+        /// <summary>
+        /// 网关判定登录凭证已过期（20018 / 35005「token invalid」）。死 token 会让所有会员曲目
+        /// 都被误报成「需要会员」，所以这里直接退回匿名身份，并提示重新扫码登录。
+        /// </summary>
+        private void invalidateLogin(string reason)
+        {
+            if (!api.Session.IsLoggedIn || loginInvalidated)
+                return;
+
+            loginInvalidated = true;
+
+            AppLog.Player.Add($"{reason}，登录凭证已失效，请重新扫码登录（免费歌曲仍可播放）", LogLevel.Important);
+
+            api.Session.Logout();
+            api.ResetPlayAuth();
+            likedListId = 0;
+            vipClaimAttempted = false;
+            riskControlUntil = default;
+
+            const string notice = "登录已失效，请重新扫码登录";
+
+            Schedule(() =>
+            {
+                LoggedIn.Value = false;
+
+                if (notifications is not null)
+                    notifications.Post(new SimpleNotification { Text = notice, IsImportant = true });
+                else
+                    pendingLoginNotice = notice; // 启动阶段覆盖层未就绪，留给 LoadComplete 再弹
+            });
+
+            queueStateSave();
+        }
+
+        /// <summary>登录凭证过期的统一识别：误判会直接登出账号，所以只认明确的过期信号。</summary>
+        private static bool credentialExpired(JObject? response)
+        {
+            if (response is null)
+                return false;
+
+            string code = (response["errcode"] ?? response["error_code"] ?? response["err_code"])?.ToString() ?? string.Empty;
+
+            if (code is "20018" or "35005")
+                return true;
+
+            foreach (string field in new[] { "data", "error", "errmsg", "err_msg", "errMsg", "msg", "message", "error_msg" })
+            {
+                string text = response[field]?.ToString() ?? string.Empty;
+
+                if (text.Contains("token invalid", StringComparison.OrdinalIgnoreCase)
+                    || text.Contains("token expired", StringComparison.OrdinalIgnoreCase)
+                    || text.Contains("登录已过期", StringComparison.Ordinal)
+                    || text.Contains("登录已失效", StringComparison.Ordinal))
+                    return true;
+            }
+
+            return false;
+        }
+
         // -------- 数据获取 --------
         public Task<IReadOnlyList<SongInfo>> SearchAsync(string keyword)
             => AppLog.Player.TimeAsync($"搜索歌曲“{keyword}”",
                 () => mapAsync(() => api.SearchSongsAsync(keyword, 1, 30), KuGouMapper.SearchResults),
                 songs => $"，{songs.Count} 条结果");
+
+        /// <summary>记录一次成功的搜索（去重后置顶），供搜索面板展示与持久化。</summary>
+        public void RecordSearch(string keyword)
+        {
+            keyword = keyword.Trim();
+
+            if (keyword.Length == 0)
+                return;
+
+            searchHistory.RemoveAll(entry => string.Equals(entry, keyword, StringComparison.OrdinalIgnoreCase));
+            searchHistory.Insert(0, keyword);
+
+            if (searchHistory.Count > search_history_max)
+                searchHistory.RemoveRange(search_history_max, searchHistory.Count - search_history_max);
+
+            queueStateSave();
+        }
 
         /// <summary>首页推荐缓存。推荐页只在点「刷新推荐」时重新拉取，进入页面直接显示这份缓存。</summary>
         public IReadOnlyList<SongInfo>? CachedRecommend { get; private set; }
@@ -887,6 +981,10 @@ namespace OsuPlayer.Game.Music
                     else
                     {
                         verificationRequiredHasBeenRaised(response);
+
+                        if (IsLoggedIn && credentialExpired(response))
+                            invalidateLogin($"预解析被拒（{failureText(response)}）");
+
                         AppLog.Player.Debug($"预解析未取到地址（status={response["status"]}，{failureText(response)}）：{describe(song)}");
                     }
                 }
@@ -977,6 +1075,7 @@ namespace OsuPlayer.Game.Music
                     ["liked"] = new JArray(Liked.Select(toJson)),
                     ["history"] = new JArray(History.Select(toJson)),
                     ["local"] = new JArray(LocalTracks.Select(toJson)),
+                    ["searchHistory"] = new JArray(searchHistory),
                     ["timings"] = new JObject(timingOverrides.Select(p => new JProperty(p.Key, timingToJson(p.Value)))),
                     // 手动套用的歌词（本地曲目没有在线 hash，靠歌名搜来的）：重启后仍然生效。
                     ["lyrics"] = new JObject(lyricOverrides.Take(lyric_overrides_persisted)
@@ -1074,6 +1173,18 @@ namespace OsuPlayer.Game.Music
                 {
                     if (local is JObject stored)
                         LocalTracks.Add(fromJson(stored));
+                }
+
+                foreach (JToken keyword in state["searchHistory"] ?? new JArray())
+                {
+                    if (keyword.ToString().Trim() is not { Length: > 0 } saved)
+                        continue;
+
+                    if (searchHistory.Count >= search_history_max)
+                        break;
+
+                    if (!searchHistory.Contains(saved, StringComparer.OrdinalIgnoreCase))
+                        searchHistory.Add(saved);
                 }
 
                 // 设备身份先于登录恢复：mid 由它派生，登录凭证要跟着同一台「设备」走。
@@ -1227,6 +1338,7 @@ namespace OsuPlayer.Game.Music
 
             api.Session.SetLogin(token, userId, stored?["vipType"]?.Value<int>() ?? 0, stored?["vipToken"]?.ToString() ?? string.Empty);
             LoggedIn.Value = true;
+            loginInvalidated = false;
 
             // 恢复登录后确认凭证是否仍然有效（酷狗 token 会过期），失效时在日志里留痕。
             _ = probeAccountAsync();
@@ -1614,6 +1726,13 @@ namespace OsuPlayer.Game.Music
             if (timingOverrides.TryGetValue(song.Hash, out BeatmapTiming? editedTiming))
                 song = song with { Timing = editedTiming };
 
+            // 点歌拦截：歌名命中敏感词时不发起任何网络请求，直接报错并停止播放。
+            if (ContainsBlockedKeyword(song.Name))
+            {
+                blockPlayback(song, serial);
+                return;
+            }
+
             AppLog.Player.Add($"开始加载：{describe(song)}，音质 {Quality.Value}，时长 {song.DurationMs / 1000:0}s");
             CurrentSong.Value = song;
             CurrentCover.Value = song.CoverUrl ?? string.Empty;
@@ -1762,6 +1881,31 @@ namespace OsuPlayer.Game.Music
         }
 
         /// <summary>
+        /// 歌名命中敏感词：不解析地址、不加载音轨，直接停掉当前播放并报错。
+        /// </summary>
+        private void blockPlayback(SongInfo song, long serial)
+        {
+            AppLog.Player.Add($"播放被拦截（歌名包含敏感词）：{describe(song)}", LogLevel.Important);
+
+            Schedule(() =>
+            {
+                if (serial != playSerial)
+                    return;
+
+                StatusText.Value = "该歌曲已被拦截，无法播放";
+                IsPlaying.Value = false;
+
+                notifications?.Post(new SimpleNotification
+                {
+                    Text = $"《{song.Name}》已被拦截，无法播放",
+                    IsImportant = true,
+                });
+
+                abortPlayback(serial, song, "歌名包含敏感词");
+            });
+        }
+
+        /// <summary>
         /// 加载失败时的统一收尾。切歌失败必须把上一首停掉并释放：否则旧音轨会一直播放（界面显示的是新歌），
         /// 同时还占着 BASS 解码器与 HTTP 连接，越切越容易加载不出来。
         /// 另外要把切歌闸门放开，否则 Update() 里的自动切歌会被永久卡住。
@@ -1880,6 +2024,30 @@ namespace OsuPlayer.Game.Music
                 }
             }
 
+            // 登录凭证过期时，网关对所有带 token 的请求返回 20018/35005，会员曲目会被误报成
+            // 「需要会员权益」。先清掉死凭证，再以匿名身份重取一次：免费曲目照常播放，
+            // 会员曲目则在失败分支里提示「重新登录」，而不是误导用户去买会员。
+            bool loginExpired = IsLoggedIn && credentialExpired(response);
+
+            if (loginExpired && response["url"] is not JArray { Count: > 0 })
+            {
+                invalidateLogin($"播放地址被拒（{failureText(response)}）");
+
+                if (!stale())
+                {
+                    try
+                    {
+                        response = await AppLog.Player.TimeAsync($"匿名重试播放地址 {describe(song)}",
+                            () => api.GetSongUrlAsync(song.Hash, Quality.Value, song.AlbumAudioId),
+                            r => $"，status={r["status"]}, urls={(r["url"] as JArray)?.Count ?? 0}").ConfigureAwait(false);
+                    }
+                    catch (Exception e)
+                    {
+                        AppLog.Player.Add($"匿名重试播放地址失败：{describe(song)}：{e.Message}", LogLevel.Error, e);
+                    }
+                }
+            }
+
             // 正式地址被拒时依次尝试：备用音源（relate_goods）→ 概念版免费听授权 → 60 秒试听片段。
             verificationRequiredHasBeenRaised(response);
             bool preview = false;
@@ -1912,7 +2080,13 @@ namespace OsuPlayer.Game.Music
                 if (stale())
                     return null;
 
-                if (verificationRequired is { } required)
+                if (loginExpired)
+                {
+                    // 凭证已过期：会员曲目在匿名身份下必然拿不到地址，这时再提示「买会员」是误导。
+                    AppLog.Player.Add($"登录已失效，重登后可播放该曲目：{describe(song)}", LogLevel.Important);
+                    StatusText.Value = "登录已失效，请重新扫码登录后播放";
+                }
+                else if (verificationRequired is { } required)
                 {
                     // 网关要求人机验证（errcode 20028）：这与会员/版权无关，再重试也是同样的结果。
                     AppLog.Player.Add($"无可播放地址（{required}）：{describe(song)}", LogLevel.Important);
@@ -2774,6 +2948,7 @@ namespace OsuPlayer.Game.Music
         private void completeLogin(string what)
         {
             LoggedIn.Value = true;
+            loginInvalidated = false;
             AppLog.Player.Add($"{what}成功，用户 ID：{LoginUserId}", LogLevel.Important);
             refreshMemberState();
             _ = RefreshLikedAsync(force: true); // 登录后「喜欢」改为读账号歌单
@@ -3000,6 +3175,13 @@ namespace OsuPlayer.Game.Music
                 {
                     AppLog.Player.Add($"查询账号资料失败（第 {attempt} 次）：{e.Message}", LogLevel.Error, e);
                 }
+            }
+
+            // 20018 是账号资料接口对过期凭证的标准回包：启动时就能发现，不必等用户点歌失败。
+            if (credentialExpired(response))
+            {
+                invalidateLogin($"账号资料被拒（{failureText(response)}）");
+                return null;
             }
 
             try
