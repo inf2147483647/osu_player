@@ -62,6 +62,21 @@ namespace OsuPlayer.Game.Music.BeatSync.Onnx
         {
             bpm = 0;
 
+            if (model.Value is null || candidates.Count == 0)
+                return false;
+
+            float[] features = BpmFeatureBuilder.Features(salience, candidates);
+            return TryScore(features, candidates, out bpm);
+        }
+
+        /// <summary>
+        /// 直接在 C# 原生特征矩阵上打分（训练场评测用）：不重新解码音频，也不重算特征。
+        /// features 长度必须是 count * <see cref="BpmFeatureBuilder.FeatureCount"/>。
+        /// </summary>
+        public static bool TryScore(float[] features, IReadOnlyList<double> candidates, out double bpm)
+        {
+            bpm = 0;
+
             Loaded? m = model.Value;
 
             if (m is null || candidates.Count == 0)
@@ -69,9 +84,12 @@ namespace OsuPlayer.Game.Music.BeatSync.Onnx
 
             try
             {
-                float[] features = BpmFeatureBuilder.Features(salience, candidates);
-                var input = new DenseTensor<float>(new[] { candidates.Count, BpmFeatureBuilder.FeatureCount });
+                int count = candidates.Count;
 
+                if (features.Length != count * BpmFeatureBuilder.FeatureCount)
+                    return false;
+
+                var input = new DenseTensor<float>(new[] { count, BpmFeatureBuilder.FeatureCount });
                 features.CopyTo(input.Buffer.Slice(0, features.Length));
 
                 float[] probabilities;
@@ -81,10 +99,10 @@ namespace OsuPlayer.Game.Music.BeatSync.Onnx
                            NamedOnnxValue.CreateFromTensor(m.InputName, input),
                        }))
                 {
-                    probabilities = extractPositiveProbabilities(results, candidates.Count);
+                    probabilities = extractPositiveProbabilities(results, count);
                 }
 
-                if (probabilities.Length != candidates.Count)
+                if (probabilities.Length != count)
                     return false;
 
                 // 保守覆盖：领先不够就保留“显著度最强的候选”（即传统解），避免把本就正确的
@@ -97,9 +115,57 @@ namespace OsuPlayer.Game.Music.BeatSync.Onnx
                         best = i;
                 }
 
-                bpm = best == 0 || probabilities[best] - probabilities[0] >= m.Config.OverrideMargin
-                    ? candidates[best]
-                    : candidates[0];
+                // 倍频抑制：实际使用里只出现「偏快一倍」，没有「偏慢一半」。
+                // 若当前结果恰好是某个更低候选的 2×/4×，且那个低候选也有足够概率、与首选差距不大，
+                // 就降到低层级；最多降两级（256→128→64）。
+                int chosen = best == 0 || probabilities[best] - probabilities[0] >= m.Config.OverrideMargin ? best : 0;
+
+                for (int round = 0; round < 2; round++)
+                {
+                    int lower = -1;
+
+                    foreach (double factor in new[] { 2.0, 4.0 })
+                    {
+                        double target = candidates[chosen] / factor;
+
+                        if (target < BpmFeatureBuilder.BpmMin)
+                            continue;
+
+                        int candidate = -1;
+                        double bestRelativeError = 0.011;
+
+                        for (int i = 0; i < candidates.Count; i++)
+                        {
+                            if (i == chosen)
+                                continue;
+
+                            double relativeError = Math.Abs(candidates[i] - target) / target;
+
+                            if (relativeError < bestRelativeError)
+                            {
+                                bestRelativeError = relativeError;
+                                candidate = i;
+                            }
+                        }
+
+                        if (candidate < 0)
+                            continue;
+
+                        if (probabilities[candidate] < m.Config.DoublingProbabilityMin
+                            || probabilities[best] - probabilities[candidate] > m.Config.DoublingGapMax)
+                            continue;
+
+                        if (lower < 0 || probabilities[candidate] > probabilities[lower])
+                            lower = candidate;
+                    }
+
+                    if (lower < 0)
+                        break;
+
+                    chosen = lower;
+                }
+
+                bpm = candidates[chosen];
 
                 return bpm > 0;
             }

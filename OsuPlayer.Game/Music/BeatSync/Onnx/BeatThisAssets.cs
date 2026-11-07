@@ -131,7 +131,15 @@ namespace OsuPlayer.Game.Music.BeatSync.Onnx
 
         private static HttpClient createHttpClient()
         {
-            var client = new HttpClient { Timeout = TimeSpan.FromMinutes(30) };
+            // 与 MusicBeatSyncProvider 一致：显式使用托管 SocketsHttpHandler，
+            // 避免 Android 默认的 Java 栈处理器受 cleartext 策略影响。
+            var handler = new SocketsHttpHandler
+            {
+                ConnectTimeout = TimeSpan.FromSeconds(10),
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            };
+
+            var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(30) };
             client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
             return client;
         }

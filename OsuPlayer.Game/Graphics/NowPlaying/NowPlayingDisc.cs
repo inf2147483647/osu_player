@@ -176,30 +176,28 @@ namespace OsuPlayer.Game.Graphics.NowPlaying
                                             RelativeSizeAxes = Axes.Both,
                                             Colour = new Color4(30, 30, 42, 255),
                                         },
+                                        // 只有封面参与自转/跟随歌词旋转，外圈边框与占位图标保持静止。
                                         rotationContainer = new Container
                                         {
                                             Anchor = Anchor.Centre,
                                             Origin = Anchor.Centre,
                                             RelativeSizeAxes = Axes.Both,
-                                            Children = new Drawable[]
+                                            Child = cover = new OnlineSprite(player.OnlineTextures)
                                             {
-                                                cover = new OnlineSprite(player.OnlineTextures)
-                                                {
-                                                    RelativeSizeAxes = Axes.Both,
-                                                    Anchor = Anchor.Centre,
-                                                    Origin = Anchor.Centre,
-                                                    FillMode = FillMode.Fill,
-                                                    Alpha = 0,
-                                                },
-                                                placeholderIcon = new SpriteIcon
-                                                {
-                                                    Anchor = Anchor.Centre,
-                                                    Origin = Anchor.Centre,
-                                                    Size = new Vector2(110),
-                                                    Icon = FontAwesome.Solid.Music,
-                                                    Colour = new Color4(90, 90, 110, 255),
-                                                },
+                                                RelativeSizeAxes = Axes.Both,
+                                                Anchor = Anchor.Centre,
+                                                Origin = Anchor.Centre,
+                                                FillMode = FillMode.Fill,
+                                                Alpha = 0,
                                             },
+                                        },
+                                        placeholderIcon = new SpriteIcon
+                                        {
+                                            Anchor = Anchor.Centre,
+                                            Origin = Anchor.Centre,
+                                            Size = new Vector2(110),
+                                            Icon = FontAwesome.Solid.Music,
+                                            Colour = new Color4(90, 90, 110, 255),
                                         },
                                         // Clipped to the circle, like osu!'s flash layer.
                                         flashLayer = new Box
@@ -236,6 +234,13 @@ namespace OsuPlayer.Game.Graphics.NowPlaying
                 cover.SetUrl(e.NewValue);
             }
         }
+
+        /// <summary>
+        /// 「跟随歌词」模式：由主界面按歌词扇形滚动驱动，只让饼内封面绕中心旋转，
+        /// 外圈边框、波谱与占位图标保持静止。
+        /// </summary>
+        public void RotateCoverTo(float angle, double duration, Easing easing)
+            => rotationContainer.RotateTo(angle, duration, easing);
 
         protected override void Update()
         {

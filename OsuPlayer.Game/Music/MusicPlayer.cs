@@ -376,6 +376,9 @@ namespace OsuPlayer.Game.Music
             History.BindCollectionChanged((_, _) => queueStateSave());
             LocalTracks.BindCollectionChanged((_, _) => queueStateSave());
 
+            // 桌面端把文件拖进窗口即可导入：.osu 套用 timing，音频 / 谱面压缩包进本地库。
+            host.Window.DragDrop += onWindowDragDrop;
+
             // 恢复登录时若因平台身份变更丢弃了凭证，此时覆盖层已就绪，弹出提示。
             if (pendingLoginNotice is { } notice)
             {
@@ -1372,28 +1375,55 @@ namespace OsuPlayer.Game.Music
             if (CurrentSong.Value is not { } song)
                 return;
 
-            timingOverrides[song.Hash] = timing;
+            ApplyTimingTo(song.Hash, timing);
+        }
 
-            SongInfo updated = song with { Timing = timing };
-            CurrentSong.Value = updated;
+        /// <summary>
+        /// 把时间轴套到指定歌曲 id（hash）上：无论那首歌在当前队列、本地库、历史还是喜欢里，
+        /// 都同步更新；正在播放时还会通知节拍源按新时间轴重建。
+        /// 返回匹配到的列表条目数（0 也表示已记住，切到那首歌时仍会生效）。
+        /// </summary>
+        public int ApplyTimingTo(string songHash, BeatmapTiming timing)
+        {
+            if (string.IsNullOrEmpty(songHash))
+                return 0;
 
-            // 队列与本地库里同 hash 的条目一起更新，切歌回来时仍然生效。
-            for (int i = 0; i < Queue.Count; i++)
+            timingOverrides[songHash] = timing;
+
+            int matches = 0;
+
+            if (CurrentSong.Value is { } current && string.Equals(current.Hash, songHash, StringComparison.OrdinalIgnoreCase))
             {
-                if (Queue[i].Hash == song.Hash)
-                    Queue[i] = updated;
+                CurrentSong.Value = current with { Timing = timing };
+                TimingRevision.Value++;
+                matches++;
             }
 
-            for (int i = 0; i < LocalTracks.Count; i++)
-            {
-                if (LocalTracks[i].Hash == song.Hash)
-                    LocalTracks[i] = updated;
-            }
+            matches += applyTo(Queue, songHash, timing);
+            matches += applyTo(LocalTracks, songHash, timing);
+            matches += applyTo(History, songHash, timing);
+            matches += applyTo(Liked, songHash, timing);
 
-            AppLog.Player.Add($"timing 已更新：{describe(updated)}｜变速 {timing.TempoLines.Count()} 处，kiai {timing.KiaiSections.Count} 段", LogLevel.Important);
+            AppLog.Player.Add($"timing 已应用到歌曲 id {songHash}（匹配 {matches} 处）｜变速 {timing.TempoLines.Count()} 处，kiai {timing.KiaiSections.Count} 段", LogLevel.Important);
 
             queueStateSave();
-            TimingRevision.Value++;
+            return matches;
+        }
+
+        private static int applyTo(BindableList<SongInfo> list, string songHash, BeatmapTiming timing)
+        {
+            int matches = 0;
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                if (!string.Equals(list[i].Hash, songHash, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                list[i] = list[i] with { Timing = timing };
+                matches++;
+            }
+
+            return matches;
         }
 
         // -------- 会员 / 付费 状态 --------
@@ -1658,6 +1688,44 @@ namespace OsuPlayer.Game.Music
 
         // -------- 本地音乐 --------
 
+        /// <summary>拖拽到窗口里的文件；同一批拖拽会在很短时间内接连到达，先攒起来再一次性导入。</summary>
+        private readonly List<string> pendingDroppedFiles = new();
+        private ScheduledDelegate? droppedImportDelegate;
+
+        private void onWindowDragDrop(string path)
+        {
+            if (string.IsNullOrEmpty(path))
+                return;
+
+            // SDL 的拖拽回调不在更新线程，所有状态改动都排回更新线程。
+            Schedule(() =>
+            {
+                pendingDroppedFiles.Add(path);
+
+                droppedImportDelegate?.Cancel();
+                droppedImportDelegate = Scheduler.AddDelayed(() =>
+                {
+                    string[] files = pendingDroppedFiles.ToArray();
+                    pendingDroppedFiles.Clear();
+                    _ = importDroppedAsync(files);
+                }, 150);
+            });
+        }
+
+        private async Task importDroppedAsync(IReadOnlyList<string> paths)
+        {
+            AppLog.Player.Add($"拖拽导入 {paths.Count} 个文件：{string.Join("、", paths.Select(Path.GetFileName))}", LogLevel.Important);
+
+            try
+            {
+                await ImportLocalAsync(paths).ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                AppLog.Player.Add($"拖拽导入失败：{e.Message}", LogLevel.Error, e);
+            }
+        }
+
         /// <summary>
         /// Imports files chosen by the user (.osz / .olz beatmap archives and common audio formats) into
         /// <see cref="LocalTracks"/>. Parsing and archive extraction run on a thread-pool thread; entries
@@ -1668,12 +1736,21 @@ namespace OsuPlayer.Game.Music
             if (paths.Count == 0)
                 return 0;
 
+            // 单独导入的 .osu 只带 timing，不产生曲目；其余文件走原有的音频 / 谱面压缩包导入。
+            List<string> timingPaths = paths.Where(LocalImporter.IsTimingFile).ToList();
+            List<string> mediaPaths = paths.Where(path => !LocalImporter.IsTimingFile(path)).ToList();
+
             var importer = new LocalImporter(host.Storage);
-            IReadOnlyList<SongInfo> imported;
+            IReadOnlyList<SongInfo> imported = [];
+            IReadOnlyList<LocalImporter.TimingFileImport> timingFiles = [];
 
             try
             {
-                imported = await Task.Run(() => importer.ImportAll(paths)).ConfigureAwait(false);
+                if (mediaPaths.Count > 0)
+                    imported = await Task.Run(() => importer.ImportAll(mediaPaths)).ConfigureAwait(false);
+
+                if (timingPaths.Count > 0)
+                    timingFiles = await Task.Run(() => timingPaths.Select(importer.ParseTimingFile).ToList()).ConfigureAwait(false);
             }
             catch (Exception e)
             {
@@ -1699,7 +1776,44 @@ namespace OsuPlayer.Game.Music
                     added++;
                 }
 
-                AppLog.Player.Add($"本地导入完成：新增 {added} 首，本地库共 {LocalTracks.Count} 首", LogLevel.Important);
+                if (mediaPaths.Count > 0)
+                    AppLog.Player.Add($"本地导入完成：新增 {added} 首，本地库共 {LocalTracks.Count} 首", LogLevel.Important);
+
+                int applied = 0;
+                var failures = new List<string>();
+
+                foreach (LocalImporter.TimingFileImport file in timingFiles)
+                {
+                    if (file.Timing is not { Lines.Count: > 0 } timing)
+                    {
+                        failures.Add($"{Path.GetFileName(file.FilePath)}：{file.Error ?? "没有可用的 TimingPoints"}");
+                        continue;
+                    }
+
+                    if (string.IsNullOrEmpty(file.SongId))
+                    {
+                        failures.Add($"{Path.GetFileName(file.FilePath)}：缺少歌曲 id（Tags 里没有 {OsuTimingExporter.SongIdTagPrefix}&lt;id&gt;）");
+                        continue;
+                    }
+
+                    ApplyTimingTo(file.SongId, timing);
+                    applied++;
+                }
+
+                foreach (string failure in failures)
+                    AppLog.Player.Add($"timing 导入跳过：{failure}", LogLevel.Important);
+
+                if (applied > 0 || failures.Count > 0)
+                {
+                    notifications?.Post(new SimpleNotification
+                    {
+                        Text = applied > 0
+                            ? $"已应用 {applied} 个 timing" + (failures.Count > 0 ? $"，{failures.Count} 个失败（详见运行日志）" : string.Empty)
+                            : $"timing 导入失败：{failures[0]}",
+                        IsImportant = true,
+                    });
+                }
+
                 completion.SetResult(added);
             });
 
@@ -2721,6 +2835,54 @@ namespace OsuPlayer.Game.Music
                 History.RemoveAt(History.Count - 1);
         }
 
+        /// <summary>列表行的唯一键：本地曲目可能没有 hash，用路径兜底。</summary>
+        public static string KeyOf(SongInfo song)
+            => !string.IsNullOrEmpty(song.Hash) ? song.Hash : song.LocalPath ?? song.DisplayText;
+
+        /// <summary>
+        /// 从本地库移除选中的曲目。只删库里的记录，不动磁盘文件；删除不可恢复。
+        /// </summary>
+        public int RemoveLocalTracks(IReadOnlyCollection<SongInfo> songs)
+        {
+            HashSet<string> keys = songs.Select(KeyOf).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            int removed = 0;
+
+            for (int i = LocalTracks.Count - 1; i >= 0; i--)
+            {
+                if (!keys.Contains(KeyOf(LocalTracks[i])))
+                    continue;
+
+                LocalTracks.RemoveAt(i);
+                removed++;
+            }
+
+            if (removed > 0)
+                AppLog.Player.Add($"本地库删除 {removed} 首，剩余 {LocalTracks.Count} 首（不可恢复）", LogLevel.Important);
+
+            return removed;
+        }
+
+        /// <summary>从播放历史中移除选中的曲目；删除不可恢复。</summary>
+        public int RemoveHistoryTracks(IReadOnlyCollection<SongInfo> songs)
+        {
+            HashSet<string> keys = songs.Select(KeyOf).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            int removed = 0;
+
+            for (int i = History.Count - 1; i >= 0; i--)
+            {
+                if (!keys.Contains(KeyOf(History[i])))
+                    continue;
+
+                History.RemoveAt(i);
+                removed++;
+            }
+
+            if (removed > 0)
+                AppLog.Player.Add($"播放历史删除 {removed} 首，剩余 {History.Count} 首（不可恢复）", LogLevel.Important);
+
+            return removed;
+        }
+
         protected override void Update()
         {
             base.Update();
@@ -3461,6 +3623,8 @@ namespace OsuPlayer.Game.Music
         protected override void Dispose(bool isDisposing)
         {
             stateSaveDelegate?.Cancel();
+            droppedImportDelegate?.Cancel();
+            host.Window.DragDrop -= onWindowDragDrop;
             saveState();
 
             base.Dispose(isDisposing);

@@ -1,6 +1,7 @@
 ﻿﻿﻿﻿﻿﻿using System.Globalization;
 using System.IO.Compression;
 using System.Text;
+using System.Text.Json;
 using OsuPlayer.Game.Logging;
 using OsuPlayer.Game.Music.BeatSync.Onnx;
 using osu.Framework.Logging;
@@ -603,6 +604,411 @@ namespace OsuPlayer.Game.Music.BeatSync
             File.WriteAllText(reportPath, sb.ToString());
             AppLog.Beat.Add($"BPM 评测报告已写入：{reportPath}", LogLevel.Important);
 
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// 把 training 清单里的已下载音频跑一遍 **C# 原生** BPM 特征管线，导出逐候选训练数据。
+        ///
+        /// 与 <see cref="BpmMl.TryDetect(double[], IReadOnlyList{double}, out double)"/> 完全同源：
+        /// onset → 自相关显著度 → 候选 → <see cref="BpmFeatureBuilder.Features"/>。
+        /// Python 端只做分类器训练和 ONNX 导出，不再复算特征，避免两边口径漂移。
+        ///
+        /// 输出列：song_id,song_name,truth_bpm,candidate_index,candidate_bpm,label,f0..f13
+        /// label = |候选 - 真值| ≤ 4%·真值。
+        /// </summary>
+        public static async Task<string> ExportBpmFeaturesAsync(string manifestPath, string outputPath,
+                                                                 CancellationToken ct = default)
+        {
+            using JsonDocument document = JsonDocument.Parse(await File.ReadAllTextAsync(manifestPath, ct).ConfigureAwait(false));
+            JsonElement songs = document.RootElement.GetProperty("songs");
+            var rows = new StringBuilder();
+            int written = 0, skipped = 0, candidateRows = 0;
+
+            foreach (JsonElement song in songs.EnumerateArray())
+            {
+                ct.ThrowIfCancellationRequested();
+
+                string id = song.GetProperty("id").GetString() ?? string.Empty;
+                string name = song.TryGetProperty("name", out JsonElement nameElement) ? nameElement.GetString() ?? id : id;
+                double truth = song.GetProperty("bpm").GetDouble();
+
+                if (song.TryGetProperty("variable_tempo", out JsonElement variable) && variable.GetBoolean())
+                {
+                    skipped++;
+                    continue;
+                }
+
+                if (!song.TryGetProperty("audio", out JsonElement audioElement))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                string status = audioElement.TryGetProperty("status", out JsonElement statusElement)
+                    ? statusElement.GetString() ?? string.Empty
+                    : string.Empty;
+                string? audioPath = audioElement.TryGetProperty("path", out JsonElement pathElement)
+                    ? pathElement.GetString()
+                    : null;
+
+                if (status is not ("downloaded" or "local") || audioPath is null || !File.Exists(audioPath))
+                {
+                    skipped++;
+                    continue;
+                }
+
+                try
+                {
+                    byte[] audio = await File.ReadAllBytesAsync(audioPath, ct).ConfigureAwait(false);
+                    (float[] samples, int sampleRate) = BeatAnalyser.DecodeMonoSamples(audio);
+
+                    double[] onset = BpmFeatureBuilder.OnsetEnvelope(samples, sampleRate, out double fps);
+                    double[] salience = BpmFeatureBuilder.Salience(onset, fps);
+                    List<double> candidates = BpmFeatureBuilder.Candidates(salience);
+
+                    if (candidates.Count == 0)
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    float[] features = BpmFeatureBuilder.Features(salience, candidates);
+
+                    for (int i = 0; i < candidates.Count; i++)
+                    {
+                        int label = acc1(candidates[i], truth) ? 1 : 0;
+                        rows.Append(id).Append(',')
+                            .Append('"').Append(name.Replace('"', ' ')).Append('"').Append(',')
+                            .Append(FormatInvariant(truth)).Append(',')
+                            .Append(i).Append(',')
+                            .Append(FormatInvariant(candidates[i])).Append(',')
+                            .Append(label);
+
+                        for (int k = 0; k < BpmFeatureBuilder.FeatureCount; k++)
+                            rows.Append(',').Append(FormatInvariant(features[i * BpmFeatureBuilder.FeatureCount + k]));
+
+                        rows.AppendLine();
+                        candidateRows++;
+                    }
+
+                    written++;
+                }
+                catch (Exception e)
+                {
+                    skipped++;
+                    AppLog.Beat.Add($"BPM 原生特征导出：{name} 失败：{e.Message}", LogLevel.Error, e);
+                }
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine("# bpmfeat v1");
+            sb.AppendLine("# source=csharp-native");
+            sb.AppendLine($"# fft_n={BpmFeatureBuilder.FftN}");
+            sb.AppendLine($"# hop={BpmFeatureBuilder.Hop}");
+            sb.AppendLine("# features=" + string.Join(",", Enumerable.Range(0, BpmFeatureBuilder.FeatureCount).Select(i => $"f{i}")));
+            sb.AppendLine("song_id,song_name,truth_bpm,candidate_index,candidate_bpm,label,"
+                          + string.Join(",", Enumerable.Range(0, BpmFeatureBuilder.FeatureCount).Select(i => $"f{i}")));
+            sb.Append(rows);
+
+            string? directory = Path.GetDirectoryName(Path.GetFullPath(outputPath));
+
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+
+            await File.WriteAllTextAsync(outputPath, sb.ToString(), ct).ConfigureAwait(false);
+
+            string summary = $"BPM 原生特征导出完成：{written} 首 / {candidateRows} 条候选 → {outputPath}（跳过 {skipped} 首）。";
+            AppLog.Beat.Add(summary, LogLevel.Important);
+            return summary;
+        }
+
+        /// <summary>
+        /// 直接在 C# 导出的原生特征 CSV 上评测 BpmMl（不重新解码音频），
+        /// 用于快速验收「C# 特征 → C# 模型」这条链路。
+        /// 基线取候选集第一个（显著度最强峰），模型预测由 <see cref="BpmMl.TryScore"/> 给出。
+        /// </summary>
+        public static async Task<string> EvaluateBpmFeaturesAsync(string featuresPath, string reportPath,
+                                                                   CancellationToken ct = default)
+        {
+            string[] lines = await File.ReadAllLinesAsync(featuresPath, ct).ConfigureAwait(false);
+            var report = new StringBuilder();
+            int songs = 0, baselineAcc1 = 0, baselineAcc2 = 0, modelAcc1 = 0, modelAcc2 = 0;
+            int changed = 0, changedRight = 0, changedWrong = 0;
+            string currentId = string.Empty, currentName = string.Empty;
+            double truth = 0;
+            var candidates = new List<double>();
+            var features = new List<float>();
+
+            void flush()
+            {
+                if (candidates.Count == 0)
+                    return;
+
+                double baseline = candidates[0];
+                bool modelOk;
+
+                if (BpmMl.TryScore(features.ToArray(), candidates, out double modelBpm))
+                {
+                    modelAcc1 += acc1(modelBpm, truth) ? 1 : 0;
+                    modelAcc2 += acc2(modelBpm, truth) ? 1 : 0;
+
+                    if (acc1(baseline, truth))
+                        baselineAcc1++;
+
+                    if (acc2(baseline, truth))
+                        baselineAcc2++;
+
+                    if (Math.Abs(modelBpm - baseline) > 0.5)
+                    {
+                        changed++;
+
+                        if (acc1(modelBpm, truth) && !acc1(baseline, truth))
+                            changedRight++;
+                        else if (!acc1(modelBpm, truth) && acc1(baseline, truth))
+                            changedWrong++;
+                    }
+
+                    modelOk = acc1(modelBpm, truth);
+                    report.AppendLine($"{currentName}\t真值 {truth:0.##}\t基线 {baseline:0.##}\t模型 {modelBpm:0.##}"
+                                      + $"\t{(modelOk ? "✓" : acc2(modelBpm, truth) ? "倍频" : "✗")}");
+                }
+                else
+                {
+                    // 模型不可用时把基线当作模型结果，避免报告出现空洞。
+                    modelAcc1 += acc1(baseline, truth) ? 1 : 0;
+                    modelAcc2 += acc2(baseline, truth) ? 1 : 0;
+                    baselineAcc1 += acc1(baseline, truth) ? 1 : 0;
+                    baselineAcc2 += acc2(baseline, truth) ? 1 : 0;
+                    report.AppendLine($"{currentName}\t真值 {truth:0.##}\t基线 {baseline:0.##}\t模型不可用");
+                }
+
+                songs++;
+                candidates.Clear();
+                features.Clear();
+            }
+
+            foreach (string raw in lines)
+            {
+                string line = raw.Trim();
+
+                if (line.Length == 0 || line.StartsWith('#') || line.StartsWith("song_id,", StringComparison.Ordinal))
+                    continue;
+
+                List<string> columns = splitCsv(line);
+
+                if (columns.Count < 6 + BpmFeatureBuilder.FeatureCount)
+                    continue;
+
+                string id = columns[0];
+
+                if (id != currentId)
+                {
+                    flush();
+                    currentId = id;
+                    currentName = columns[1];
+                    truth = double.Parse(columns[2], CultureInfo.InvariantCulture);
+                }
+
+                candidates.Add(double.Parse(columns[4], CultureInfo.InvariantCulture));
+
+                for (int i = 0; i < BpmFeatureBuilder.FeatureCount; i++)
+                    features.Add(float.Parse(columns[6 + i], CultureInfo.InvariantCulture));
+            }
+
+            flush();
+
+            var sb = new StringBuilder();
+            sb.AppendLine("# C# 原生 BPM 模型评测（特征由 C# BpmFeatureBuilder 导出）");
+            sb.AppendLine($"# 特征文件：{featuresPath}");
+            sb.AppendLine($"# 模型：{BpmMl.Status}");
+            sb.AppendLine($"# 曲目数：{songs}");
+            sb.AppendLine();
+
+            if (songs > 0)
+            {
+                sb.AppendLine($"基线（最强峰） Acc1：{(double)baselineAcc1 / songs:0.000}（{baselineAcc1}/{songs}）  "
+                              + $"Acc2：{(double)baselineAcc2 / songs:0.000}（{baselineAcc2}/{songs}）");
+                sb.AppendLine($"C# 模型       Acc1：{(double)modelAcc1 / songs:0.000}（{modelAcc1}/{songs}）  "
+                              + $"Acc2：{(double)modelAcc2 / songs:0.000}（{modelAcc2}/{songs}）");
+                sb.AppendLine($"模型改判：{changed} 首（改对 {changedRight}，改错 {changedWrong}）");
+            }
+
+            sb.AppendLine();
+            sb.Append(report);
+
+            string? directory = Path.GetDirectoryName(Path.GetFullPath(reportPath));
+
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+
+            await File.WriteAllTextAsync(reportPath, sb.ToString(), ct).ConfigureAwait(false);
+
+            string summary = $"C# 原生特征评测：{songs} 首，基线 Acc1 {(songs > 0 ? (double)baselineAcc1 / songs : 0):0.000} → "
+                             + $"模型 Acc1 {(songs > 0 ? (double)modelAcc1 / songs : 0):0.000} → {reportPath}";
+            AppLog.Beat.Add(summary, LogLevel.Important);
+            return summary;
+        }
+
+        private static List<string> splitCsv(string line)
+        {
+            var columns = new List<string>();
+            var field = new StringBuilder();
+            bool quoted = false;
+
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+
+                if (quoted)
+                {
+                    if (c == '"')
+                    {
+                        if (i + 1 < line.Length && line[i + 1] == '"')
+                        {
+                            field.Append('"');
+                            i++;
+                        }
+                        else
+                            quoted = false;
+                    }
+                    else
+                        field.Append(c);
+                }
+                else if (c == '"')
+                    quoted = true;
+                else if (c == ',')
+                {
+                    columns.Add(field.ToString());
+                    field.Clear();
+                }
+                else
+                    field.Append(c);
+            }
+
+            columns.Add(field.ToString());
+            return columns;
+        }
+
+        /// <summary>
+        /// 用完整 C# 原生分析管线（含 BpmMl）逐首评测用户手改 timing 的音频。
+        /// `原生` 是模型介入前的融合测速（<see cref="BeatAnalysisDetails.RawBpm"/>），
+        /// `模型` 是最终结果；两者对比能直接看出回灌模型是否真的在 C# 端生效。
+        /// </summary>
+        public static async Task<string> EvaluateUserBpmAsync(string manifestPath, string reportPath,
+                                                                CancellationToken ct = default)
+        {
+            using JsonDocument document = JsonDocument.Parse(await File.ReadAllTextAsync(manifestPath, ct).ConfigureAwait(false));
+            JsonElement songs = document.RootElement.GetProperty("songs");
+            var lines = new List<string>();
+            int evaluated = 0, rawAcc1 = 0, modelAcc1 = 0, rawAcc2 = 0, modelAcc2 = 0;
+            int changed = 0, changedRight = 0, changedWrong = 0;
+
+            foreach (JsonElement song in songs.EnumerateArray())
+            {
+                ct.ThrowIfCancellationRequested();
+
+                string name = song.TryGetProperty("name", out JsonElement nameElement) && !string.IsNullOrWhiteSpace(nameElement.GetString())
+                    ? nameElement.GetString()!
+                    : song.GetProperty("id").GetString() ?? "?";
+                double truth = song.GetProperty("bpm").GetDouble();
+
+                if (song.TryGetProperty("variable_tempo", out JsonElement variable) && variable.GetBoolean())
+                {
+                    lines.Add($"{name}\t跳过（多 BPM）");
+                    continue;
+                }
+
+                if (!song.TryGetProperty("audio", out JsonElement audioElement))
+                    continue;
+
+                string status = audioElement.TryGetProperty("status", out JsonElement statusElement)
+                    ? statusElement.GetString() ?? string.Empty
+                    : string.Empty;
+                string? audioPath = audioElement.TryGetProperty("path", out JsonElement pathElement)
+                    ? pathElement.GetString()
+                    : null;
+
+                if (status is not ("downloaded" or "local") || audioPath is null || !File.Exists(audioPath))
+                {
+                    lines.Add($"{name}\t跳过（音频未就绪）");
+                    continue;
+                }
+
+                try
+                {
+                    byte[] audio = await File.ReadAllBytesAsync(audioPath, ct).ConfigureAwait(false);
+                    BeatAnalysisDetails details = await new BeatAnalyser().AnalyseDetailedAsync(audio).ConfigureAwait(false);
+
+                    double raw = details.RawBpm;
+                    double model = details.Result.Bpm;
+                    bool rawOk = acc1(raw, truth);
+                    bool modelOk = acc1(model, truth);
+
+                    evaluated++;
+
+                    if (rawOk)
+                        rawAcc1++;
+                    if (modelOk)
+                        modelAcc1++;
+                    if (acc2(raw, truth))
+                        rawAcc2++;
+                    if (acc2(model, truth))
+                        modelAcc2++;
+
+                    if (Math.Abs(raw - model) > 0.5)
+                    {
+                        changed++;
+
+                        if (modelOk && !rawOk)
+                            changedRight++;
+                        else if (!modelOk && rawOk)
+                            changedWrong++;
+                    }
+
+                    lines.Add($"{name}\t真值 {truth:0.##}\t原生 {raw:0.##}\t模型 {model:0.##}"
+                              + $"\t{(modelOk ? "✓" : acc2(model, truth) ? "倍频" : "✗")}");
+                }
+                catch (Exception e)
+                {
+                    lines.Add($"{name}\t失败：{e.Message}");
+                    AppLog.Beat.Add($"用户 BPM 评测：{name} 失败：{e.Message}", LogLevel.Error, e);
+                }
+            }
+
+            var sb = new StringBuilder();
+            sb.AppendLine("# 用户手改 timing 的 C# 原生 BPM 端到端评测");
+            sb.AppendLine($"# 清单：{manifestPath}");
+            sb.AppendLine($"# BPM 层级模型：{(BpmMl.IsAvailable ? BpmMl.Status : "未安装（纯原生）")}");
+            sb.AppendLine($"# 曲目数：{evaluated}");
+            sb.AppendLine();
+
+            foreach (string line in lines)
+                sb.AppendLine(line);
+
+            sb.AppendLine();
+            sb.AppendLine("== 汇总 ==");
+
+            if (evaluated > 0)
+            {
+                sb.AppendLine($"原生 Acc1：{(double)rawAcc1 / evaluated:0.000}（{rawAcc1}/{evaluated}）  "
+                              + $"模型 Acc1：{(double)modelAcc1 / evaluated:0.000}（{modelAcc1}/{evaluated}）");
+                sb.AppendLine($"原生 Acc2：{(double)rawAcc2 / evaluated:0.000}（{rawAcc2}/{evaluated}）  "
+                              + $"模型 Acc2：{(double)modelAcc2 / evaluated:0.000}（{modelAcc2}/{evaluated}）");
+                sb.AppendLine($"模型改判：{changed} 首（改对 {changedRight}，改错 {changedWrong}）");
+            }
+            else
+            {
+                sb.AppendLine("（没有可评测样本）");
+            }
+
+            string? directory = Path.GetDirectoryName(Path.GetFullPath(reportPath));
+
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+
+            await File.WriteAllTextAsync(reportPath, sb.ToString(), ct).ConfigureAwait(false);
+            AppLog.Beat.Add($"用户 BPM 评测报告已写入：{reportPath}", LogLevel.Important);
             return sb.ToString();
         }
 

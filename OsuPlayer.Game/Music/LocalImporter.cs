@@ -23,6 +23,13 @@ namespace OsuPlayer.Game.Music
     /// </summary>
     public sealed class LocalImporter
     {
+        /// <summary>解析单个 .osu 文件得到的 timing；<see cref="SongId"/> 取自导出时写入的 Tags。</summary>
+        public sealed record TimingFileImport(string FilePath, string? SongId, BeatmapTiming? Timing, string? Error);
+
+        /// <summary>是否是单独的 .osu 文件（只含 timing，不是可播放曲目）。</summary>
+        public static bool IsTimingFile(string path)
+            => string.Equals(Path.GetExtension(path), ".osu", StringComparison.OrdinalIgnoreCase);
+
         private static readonly string[] audio_extensions =
         [
             ".mp3", ".flac", ".wav", ".ogg", ".m4a", ".aac", ".wma", ".opus",
@@ -95,6 +102,47 @@ namespace OsuPlayer.Game.Music
                 AppLog.Player.Add($"导入失败：{path}：{e.Message}", LogLevel.Error, e);
                 return [];
             }
+        }
+
+        /// <summary>
+        /// 解析单独导入的 .osu：读取 <c>[TimingPoints]</c> 与导出时写入的歌曲 id（<c>Tags:osuplayer=&lt;id&gt;</c>）。
+        /// 不产生可播放曲目，调用方按 <see cref="TimingFileImport.SongId"/> 把时间轴套到对应歌曲上。
+        /// </summary>
+        public TimingFileImport ParseTimingFile(string path)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                    return new TimingFileImport(path, null, null, "文件不存在");
+
+                string text = File.ReadAllText(path, Encoding.UTF8);
+                string? songId = songIdFromTags(parseHeader(text).GetValueOrDefault("Tags"));
+                BeatmapTiming? timing = parseTimingPoints(text, parseFormatVersion(text));
+
+                return new TimingFileImport(path, songId, timing, timing is null ? "文件里没有 [TimingPoints]" : null);
+            }
+            catch (Exception e)
+            {
+                return new TimingFileImport(path, null, null, e.Message);
+            }
+        }
+
+        /// <summary>从 <c>Tags</c> 里找出导出器写入的歌曲 id；没有则返回 null。</summary>
+        private static string? songIdFromTags(string? tags)
+        {
+            if (string.IsNullOrWhiteSpace(tags))
+                return null;
+
+            foreach (string token in tags.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (!token.StartsWith(OsuTimingExporter.SongIdTagPrefix, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                string id = token[OsuTimingExporter.SongIdTagPrefix.Length..].Trim();
+                return id.Length > 0 ? id : null;
+            }
+
+            return null;
         }
 
         private IReadOnlyList<SongInfo> importArchive(string path)

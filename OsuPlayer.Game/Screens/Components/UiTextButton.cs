@@ -41,7 +41,8 @@ namespace OsuPlayer.Game.Screens.Components
             }
         }
 
-        public UiTextButton(string text, Action? action = null, float fontSize = 22)
+        public UiTextButton(string text, Action? action = null, float fontSize = 22,
+                            MarginPadding? padding = null)
         {
             Action = action;
             AutoSizeAxes = Axes.Both;
@@ -50,7 +51,7 @@ namespace OsuPlayer.Game.Screens.Components
             {
                 Anchor = Anchor.Centre,
                 Origin = Anchor.Centre,
-                Margin = new MarginPadding { Horizontal = 6, Vertical = 3 },
+                Margin = padding ?? new MarginPadding { Horizontal = 12, Vertical = 8 },
                 Text = text,
                 Font = OsuFont.GetFont(size: fontSize),
                 Colour = Color4.White,

@@ -34,6 +34,9 @@ namespace OsuPlayer.Game.Screens
     /// </summary>
     public partial class MainScreen : Screen, IKeyBindingHandler<GlobalAction>
     {
+        /// <summary>方向键步进 / 步退的时间长度（毫秒）。</summary>
+        private const double seek_step_ms = 5000;
+
         [Resolved]
         private MusicPlayer player { get; set; } = null!;
 
@@ -53,8 +56,11 @@ namespace OsuPlayer.Game.Screens
         private KiaiFountains kiaiFountains = null!;
         private RadialLyrics radialLyrics = null!;
 
-        /// <summary>圆饼外层容器：歌词扇形滚多少度，它就跟着转多少度。</summary>
+        /// <summary>圆饼外层容器（只负责定位与尺寸，不参与旋转）。</summary>
         private Container discHolder = null!;
+
+        /// <summary>主播放器圆饼：歌词驱动的旋转只作用于饼内封面。</summary>
+        private NowPlayingDisc disc = null!;
 
         private CoverImageBackground background = null!;
 
@@ -100,7 +106,7 @@ namespace OsuPlayer.Game.Screens
                     Origin = Anchor.Centre,
                     Position = UiLayout.DiscCentre,
                     Size = new Vector2(UiLayout.DiscDrawDiameter),
-                    Child = new NowPlayingDisc(),
+                    Child = disc = new NowPlayingDisc(),
                 },
 
                 // Radial lyrics fan.
@@ -170,14 +176,14 @@ namespace OsuPlayer.Game.Screens
             // 把特效动画接给桌面全屏特效子进程（本身无视觉，挂进树只为跟随屏幕生命周期）。
             overlayBridge.Attach(sideFlashes, kiaiFountains);
 
-            // 歌词扇形滚过多少度，圆饼就跟着转多少度（同一时长与缓动，所以两者同步）。
+            // 歌词扇形滚过多少度，饼内封面就跟着转多少度（同一时长与缓动，所以两者同步）。
             // 只在「跟随歌词」模式下生效；「匀速」模式由 NowPlayingDisc 自己转，两者不叠加。
             radialLyrics.FanScrolled += angle =>
             {
                 if (player.CoverRotation.Value != CoverRotationMode.FollowLyrics)
                     return;
 
-                discHolder.RotateTo(angle, RadialLyrics.ScrollDuration, RadialLyrics.ScrollEasing);
+                disc.RotateCoverTo(angle, RadialLyrics.ScrollDuration, RadialLyrics.ScrollEasing);
             };
 
             AddInternal(overlayBridge);
@@ -267,14 +273,30 @@ namespace OsuPlayer.Game.Screens
         /// </summary>
         protected override bool OnKeyDown(KeyDownEvent e)
         {
-            if (e.Key != Key.Space || e.Repeat)
+            if (e.Repeat)
                 return base.OnKeyDown(e);
 
             if (GetContainingInputManager() is InputManager input && input.FocusedDrawable is TextBox)
                 return base.OnKeyDown(e);
 
-            player.TogglePlay();
-            return true;
+            if (e.Key == Key.Space)
+            {
+                player.TogglePlay();
+                return true;
+            }
+
+            // 左 / 右方向键 = 步退 / 步进 5 秒，播放器任意界面状态都可用。
+            if (e.Key is Key.Left or Key.Right)
+            {
+                if (player.CurrentSong.Value is null)
+                    return base.OnKeyDown(e);
+
+                double step = e.Key == Key.Left ? -seek_step_ms : seek_step_ms;
+                player.Seek(player.CurrentTimeMs.Value + step);
+                return true;
+            }
+
+            return base.OnKeyDown(e);
         }
 
         public void OnReleased(KeyBindingReleaseEvent<GlobalAction> e)

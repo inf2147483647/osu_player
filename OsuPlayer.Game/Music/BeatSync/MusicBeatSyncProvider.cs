@@ -421,7 +421,16 @@ namespace OsuPlayer.Game.Music.BeatSync
 
         private static HttpClient createHttpClient()
         {
-            var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+            // 显式走托管 SocketsHttpHandler：.NET for Android 默认的处理器是 Java 栈的
+            // AndroidMessageHandler，targetSdk 36 的 cleartext 策略会让酷狗 http:// 音频直链
+            // 直接失败（异常信息只有一句 "failure"）。托管栈用 BoringSSL 直连，不受该策略影响。
+            var handler = new SocketsHttpHandler
+            {
+                ConnectTimeout = TimeSpan.FromSeconds(10),
+                PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            };
+
+            var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
             client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
             return client;
         }

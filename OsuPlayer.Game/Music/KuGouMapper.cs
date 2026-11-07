@@ -23,7 +23,12 @@ namespace OsuPlayer.Game.Music
                 str(s, "singername"),
                 str(s, "album_name"),
                 num(s, "duration") * 1000,
-                num(s, "album_audio_id"))
+                num(s, "album_audio_id"),
+                // 搜索接口不直接给封面，封面地址在 trans_param.union_cover（含 {size} 占位符）。
+                cover(s["trans_param"], "union_cover")
+                    ?? cover(s, "union_cover")
+                    ?? cover(s, "album_cover")
+                    ?? cover(s, "cover"))
             {
                 Fee = fee(s),
             }).Where(x => !string.IsNullOrEmpty(x.Hash))

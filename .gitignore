@@ -23,6 +23,12 @@ visual-tests/
 # 版权数据，只在本机 24 小时内做训练与评测用，不进版本库。
 /beatmap/
 
+## BPM 训练场
+# 下载音频与训练产物都是本机数据（音频 24 小时内删除），不进版本库。
+/training/dataset/
+/training/out/
+__pycache__/
+
 ## Rider / Visual Studio
 .idea/
 .vs/

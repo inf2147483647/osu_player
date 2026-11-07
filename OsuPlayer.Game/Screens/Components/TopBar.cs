@@ -35,7 +35,11 @@ namespace OsuPlayer.Game.Screens.Components
             RelativeSizeAxes = Axes.X;
             Height = UiLayout.TopBarHeight;
 
-            UiTextButton nav(string text, PanelKind kind) => new(text, () => OnNavigate?.Invoke(kind), 22);
+            // 导航按钮统一给足命中区域：文字四周留大内边距，整条工具栏高度都可点。
+            var navHitArea = new MarginPadding { Horizontal = 18, Vertical = 14 };
+
+            UiTextButton nav(string text, PanelKind kind)
+                => new(text, () => OnNavigate?.Invoke(kind), 22, navHitArea);
 
             InternalChildren = new Drawable[]
             {
@@ -57,8 +61,8 @@ namespace OsuPlayer.Game.Screens.Components
                     Direction = FillDirection.Horizontal,
                     Anchor = Anchor.CentreLeft,
                     Origin = Anchor.CentreLeft,
-                    Position = new Vector2(24, 0),
-                    Spacing = new Vector2(26, 0),
+                    Position = new Vector2(12, 0),
+                    Spacing = Vector2.Zero,
                     AutoSizeAxes = Axes.Both,
                     Children = new[]
                     {
@@ -77,15 +81,15 @@ namespace OsuPlayer.Game.Screens.Components
                     Direction = FillDirection.Horizontal,
                     Anchor = Anchor.CentreRight,
                     Origin = Anchor.CentreRight,
-                    Position = new Vector2(-24, 0),
-                    Spacing = new Vector2(26, 0),
+                    Position = new Vector2(-12, 0),
+                    Spacing = Vector2.Zero,
                     AutoSizeAxes = Axes.Both,
                     Children = new[]
                     {
-                        new UiTextButton("正在播放", () => OnNavigate?.Invoke(PanelKind.Queue), 22),
-                        accountButton = new UiTextButton("账号", () => OnNavigate?.Invoke(PanelKind.Account), 22),
+                        new UiTextButton("正在播放", () => OnNavigate?.Invoke(PanelKind.Queue), 22, navHitArea),
+                        accountButton = new UiTextButton("账号", () => OnNavigate?.Invoke(PanelKind.Account), 22, navHitArea),
                         CreateClock(),
-                        notificationButton = new UiTextButton("通知", () => OnNavigate?.Invoke(PanelKind.Notifications), 22),
+                        notificationButton = new UiTextButton("通知", () => OnNavigate?.Invoke(PanelKind.Notifications), 22, navHitArea),
                     },
                 },
             };

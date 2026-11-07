@@ -9,6 +9,7 @@ namespace OsuPlayer.Game.Net
     /// </summary>
     public static class FilePicker
     {
+        private const int ofn_overwriteprompt = 0x00000002;
         private const int ofn_pathmustexist = 0x00000800;
         private const int ofn_filemustexist = 0x00001000;
         private const int ofn_allowmultiselect = 0x00000200;
@@ -49,10 +50,51 @@ namespace OsuPlayer.Game.Net
             }
         }
 
+        /// <summary>Save-file dialog; returns null when the user cancels. Blocks, so call it from a background thread.</summary>
+        public static string? PickSaveFile(string suggestedFileName, string filter, string title = "导出 timing（.osu）")
+        {
+            if (!OperatingSystem.IsWindows())
+                return null;
+
+            const int bufferChars = 4096;
+            IntPtr buffer = Marshal.AllocHGlobal(bufferChars * 2);
+
+            try
+            {
+                for (int i = 0; i < bufferChars * 2; i++)
+                    Marshal.WriteByte(buffer, i, 0);
+
+                char[] initial = (suggestedFileName + "\0").ToCharArray();
+                if (initial.Length > bufferChars)
+                    initial = initial[..bufferChars];
+                Marshal.Copy(initial, 0, buffer, initial.Length);
+
+                var options = new OpenFileName
+                {
+                    lStructSize = Marshal.SizeOf<OpenFileName>(),
+                    hwndOwner = findOwnWindow(),
+                    lpstrFilter = filter,
+                    nFilterIndex = 1,
+                    lpstrFile = buffer,
+                    nMaxFile = bufferChars,
+                    lpstrTitle = title,
+                    lpstrDefExt = "osu",
+                    Flags = ofn_explorer | ofn_overwriteprompt | ofn_pathmustexist,
+                };
+
+                return GetSaveFileNameW(ref options) ? Marshal.PtrToStringUni(buffer) : null;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+
         private static string buildFilter()
-            => "音乐与谱面\0*.mp3;*.flac;*.wav;*.ogg;*.m4a;*.aac;*.wma;*.opus;*.osz;*.olz\0"
+            => "音乐、谱面与 timing\0*.mp3;*.flac;*.wav;*.ogg;*.m4a;*.aac;*.wma;*.opus;*.osz;*.olz;*.osu\0"
                + "音频文件\0*.mp3;*.flac;*.wav;*.ogg;*.m4a;*.aac;*.wma;*.opus\0"
-               + "osu! 谱面\0*.osz;*.olz\0"
+               + "osu! 谱面包\0*.osz;*.olz\0"
+               + "osu! timing\0*.osu\0"
                + "所有文件\0*.*\0\0";
 
         /// <summary>
@@ -139,6 +181,9 @@ namespace OsuPlayer.Game.Net
 
         [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool GetOpenFileNameW(ref OpenFileName options);
+
+        [DllImport("comdlg32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool GetSaveFileNameW(ref OpenFileName options);
 
         [DllImport("user32.dll")]
         private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);

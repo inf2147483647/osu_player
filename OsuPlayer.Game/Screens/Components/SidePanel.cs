@@ -19,6 +19,8 @@ using osu.Game.Graphics.Sprites;
 using osu.Game.Graphics.UserInterface;
 using osu.Game.Graphics.UserInterfaceV2;
 using osu.Game.Input.Bindings;
+using osu.Game.Overlays;
+using osu.Game.Overlays.Dialog;
 using osuTK;
 using osuTK.Graphics;
 using OsuPlayer.Game.Graphics;
@@ -60,6 +62,16 @@ namespace OsuPlayer.Game.Screens.Components
         private Container contentHost = null!;
         private OsuTextBox searchBox = null!;
 
+        [Resolved]
+        private IDialogOverlay dialogOverlay { get; set; } = null!;
+
+        /// <summary>本地/历史页的多选状态；离开页面时重置。</summary>
+        private bool selectionMode;
+        private readonly HashSet<string> selectedKeys = new(StringComparer.OrdinalIgnoreCase);
+        private UiTextButton? deleteSelectedButton;
+
+        private static readonly Color4 danger_colour = new(236, 74, 74, 255);
+
         /// <summary>The top-level panel kind currently shown; used to restore its title after going back.</summary>
         private PanelKind currentKind;
 
@@ -74,6 +86,13 @@ namespace OsuPlayer.Game.Screens.Components
         private string? qrKey;
 
         private IReadOnlyList<SongInfo> currentList = Array.Empty<SongInfo>();
+
+        /// <summary>
+        /// 内容版本号：每次重建面板内容或切换子页面时递增。
+        /// 异步加载返回时版本已变化，说明用户已离开该页面，结果必须丢弃，
+        /// 否则会把当前页面的内容覆盖成上一次请求的列表。
+        /// </summary>
+        private int contentVersion;
 
         [BackgroundDependencyLoader]
         private void load()
@@ -161,6 +180,18 @@ namespace OsuPlayer.Game.Screens.Components
             };
         }
 
+        protected override void LoadComplete()
+        {
+            base.LoadComplete();
+
+            // 拖拽 / 文件对话框 / timing 导入都会改动本地库；面板开着时立即重绘，避免看到旧列表。
+            player.LocalTracks.BindCollectionChanged((_, _) =>
+            {
+                if (currentKind == PanelKind.Local && Alpha > 0)
+                    Scheduler.AddOnce(buildLocal);
+            });
+        }
+
         /// <summary>
         /// 设计稿是 16:9（画布 1366×768），但窗口比例不同时画布会被拉得更长/更宽：
         /// 面板必须跟着铺满顶栏以下的全部高度，否则列表底部会留出一截背景（看起来"被截短"）。
@@ -190,6 +221,7 @@ namespace OsuPlayer.Game.Screens.Components
 
         private void pushNavigation(string title, Action back)
         {
+            contentVersion++;
             titleText.Text = title;
             titleText.MaxWidth = title_max_width_with_back;
             backAction = back;
@@ -225,6 +257,7 @@ namespace OsuPlayer.Game.Screens.Components
                 return;
 
             AppLog.Ui.Add("返回上一级页面", LogLevel.Important);
+            contentVersion++;
             clearNavigation();
             back.Invoke();
         }
@@ -274,7 +307,11 @@ namespace OsuPlayer.Game.Screens.Components
 
         private void buildContent(PanelKind kind)
         {
+            contentVersion++;
             contentHost.Clear();
+            selectionMode = false;
+            selectedKeys.Clear();
+            deleteSelectedButton = null;
             // 离开通知/评论面板时不再需要它们的刷新回调，避免面板换了还在重建旧内容。
             detachNotificationRefresh();
             detachCommentsRefresh();
@@ -308,7 +345,7 @@ namespace OsuPlayer.Game.Screens.Components
                     break;
 
                 case PanelKind.History:
-                    showSongs(player.History.ToList());
+                    buildHistory();
                     break;
 
                 case PanelKind.Playlists:
@@ -792,18 +829,28 @@ namespace OsuPlayer.Game.Screens.Components
 
         private async void loadLyricsResults(string keyword)
         {
+            int version = contentVersion;
             setPlaceholder("搜索中…");
 
             try
             {
                 IReadOnlyList<SongInfo> songs = await player.SearchAsync(keyword);
+
+                if (version != contentVersion)
+                {
+                    AppLog.Ui.Add($"歌词候选结果已过期（页面已切换），丢弃 {songs.Count} 行");
+                    return;
+                }
+
                 AppLog.Ui.Add($"歌词候选渲染：{songs.Count} 行");
                 showLyricsResults(songs);
             }
             catch (Exception e)
             {
                 AppLog.Ui.Add($"歌词搜索失败：{e.Message}", LogLevel.Error, e);
-                setPlaceholder($"搜索失败：{e.Message}");
+
+                if (version == contentVersion)
+                    setPlaceholder($"搜索失败：{e.Message}");
             }
         }
 
@@ -861,22 +908,33 @@ namespace OsuPlayer.Game.Screens.Components
 
         private async void loadSongList(Func<Task<IReadOnlyList<SongInfo>>> loader)
         {
+            int version = contentVersion;
             setPlaceholder("加载中…");
 
             try
             {
                 IReadOnlyList<SongInfo> songs = await loader();
+
+                // 加载期间用户切到了别的页面：结果属于旧页面，直接丢弃，避免覆盖当前页面内容。
+                if (version != contentVersion)
+                {
+                    AppLog.Ui.Add($"列表结果已过期（页面已切换），丢弃 {songs.Count} 行");
+                    return;
+                }
+
                 AppLog.Ui.Add($"列表渲染：{songs.Count} 行");
                 showSongs(songs);
             }
             catch (Exception e)
             {
                 AppLog.Ui.Add($"歌曲列表加载失败：{e.Message}", LogLevel.Error, e);
-                setPlaceholder($"加载失败：{e.Message}");
+
+                if (version == contentVersion)
+                    setPlaceholder($"加载失败：{e.Message}");
             }
         }
 
-        private void showSongs(IReadOnlyList<SongInfo> songs, Drawable? header = null)
+        private void showSongs(IReadOnlyList<SongInfo> songs, Drawable? header = null, Action<SongRow, SongInfo>? decorateRows = null)
         {
             currentList = songs;
             contentHost.Clear();
@@ -906,7 +964,7 @@ namespace OsuPlayer.Game.Screens.Components
                 flow.Add(header);
 
             contentHost.Add(flow);
-            addSongRowsBatched(flow, songs);
+            addSongRowsBatched(flow, songs, decorateRows);
 
             // 列表一出现就在后台预解析前几首，用户点下去时多半已命中缓存（首次请求同时预热网关连接）。
             player.PrewarmList(songs);
@@ -923,7 +981,7 @@ namespace OsuPlayer.Game.Screens.Components
         /// 长列表（几百首）一次性建完会把更新线程卡住一整帧甚至更久（每个 SongRow 都要建封面和多个文本子节点、
         /// 触发封面加载），所以改成逐帧增量添加：列表"长出来"的过程界面全程可用。
         /// </summary>
-        private void addSongRowsBatched(FillFlowContainer<Drawable> flow, IReadOnlyList<SongInfo> songs)
+        private void addSongRowsBatched(FillFlowContainer<Drawable> flow, IReadOnlyList<SongInfo> songs, Action<SongRow, SongInfo>? decorateRows = null)
         {
             const int batch_size = 12;
             int next = 0;
@@ -939,10 +997,13 @@ namespace OsuPlayer.Game.Screens.Components
                 for (; next < end; next++)
                 {
                     int index = next;
-                    flow.Add(new SongRow(player, songs[index])
+                    var row = new SongRow(player, songs[index])
                     {
                         Action = () => _ = player.PlayAtAsync(currentList, index),
-                    });
+                    };
+
+                    decorateRows?.Invoke(row, songs[index]);
+                    flow.Add(row);
                 }
 
                 if (next < songs.Count)
@@ -952,11 +1013,169 @@ namespace OsuPlayer.Game.Screens.Components
             addBatch();
         }
 
+        // -------- 本地/历史列表管理 --------
+
+        private void buildHistory()
+        {
+            deleteSelectedButton = null;
+
+            showSongs(player.History.ToList(), buildSelectionToolbar(),
+                (row, song) => decorateManageableRow(PanelKind.History, row, song));
+        }
+
+        /// <summary>“多选 / 取消 / 删除选中(n)”工具栏。</summary>
+        private Drawable buildSelectionToolbar()
+        {
+            var toolbar = new FillFlowContainer
+            {
+                AutoSizeAxes = Axes.Both,
+                Direction = FillDirection.Horizontal,
+                Spacing = new Vector2(14, 0),
+            };
+
+            if (!selectionMode)
+            {
+                toolbar.Add(new UiTextButton("多选", () =>
+                {
+                    selectionMode = true;
+                    selectedKeys.Clear();
+                    refreshSelectionPage();
+                }, 18));
+
+                return toolbar;
+            }
+
+            toolbar.Add(new UiTextButton("取消", () =>
+            {
+                selectionMode = false;
+                selectedKeys.Clear();
+                deleteSelectedButton = null;
+                refreshSelectionPage();
+            }, 18));
+
+            deleteSelectedButton = new UiTextButton(deleteSelectionLabel(), confirmDeleteSelected, 18)
+            {
+                LabelColour = selectedKeys.Count > 0 ? danger_colour : Color4.Gray,
+            };
+
+            toolbar.Add(deleteSelectedButton);
+            return toolbar;
+        }
+
+        private string deleteSelectionLabel() => $"删除选中 ({selectedKeys.Count})";
+
+        private void refreshSelectionCount()
+        {
+            if (deleteSelectedButton is null)
+                return;
+
+            deleteSelectedButton.Text = deleteSelectionLabel();
+            deleteSelectedButton.LabelColour = selectedKeys.Count > 0 ? danger_colour : Color4.Gray;
+        }
+
+        private void refreshSelectionPage()
+        {
+            if (currentKind == PanelKind.Local)
+                buildLocal();
+            else if (currentKind == PanelKind.History)
+                buildHistory();
+        }
+
+        private void decorateManageableRow(PanelKind kind, SongRow row, SongInfo song)
+        {
+            row.Selectable = selectionMode;
+
+            if (selectionMode)
+            {
+                string key = MusicPlayer.KeyOf(song);
+                row.SetSelected(selectedKeys.Contains(key));
+
+                row.SelectionToggled = () =>
+                {
+                    if (row.IsSelected)
+                        selectedKeys.Add(key);
+                    else
+                        selectedKeys.Remove(key);
+
+                    refreshSelectionCount();
+                };
+
+                return;
+            }
+
+            // 多选时关掉左滑，避免和「点击选中」的手势冲突。
+            row.SwipeDeleteRequested = () => confirmDelete(kind, [song]);
+        }
+
+        private void confirmDeleteSelected()
+        {
+            if (selectedKeys.Count == 0)
+                return;
+
+            List<SongInfo> songs = currentList.Where(song => selectedKeys.Contains(MusicPlayer.KeyOf(song))).ToList();
+
+            if (songs.Count > 0)
+                confirmDelete(currentKind, songs);
+        }
+
+        private void confirmDelete(PanelKind kind, IReadOnlyList<SongInfo> songs)
+        {
+            if (songs.Count == 0)
+                return;
+
+            string message = songs.Count == 1
+                ? $"确定删除《{songs[0].Name}》吗？此操作不可恢复。"
+                : $"确定删除选中的 {songs.Count} 首歌吗？此操作不可恢复。";
+
+            if (kind == PanelKind.Local)
+                message += "\n仅从本地库移除，不会删除磁盘上的原始文件。";
+
+            showConfirm("删除确认", message, () =>
+            {
+                if (kind == PanelKind.Local)
+                    player.RemoveLocalTracks(songs);
+                else if (kind == PanelKind.History)
+                    player.RemoveHistoryTracks(songs);
+
+                selectionMode = false;
+                selectedKeys.Clear();
+                deleteSelectedButton = null;
+
+                if (currentKind == kind)
+                    refreshSelectionPage();
+            });
+        }
+
+        /// <summary>使用 osu! 原生确认框；删除按钮为 danger 类型（按住确认，红底）。</summary>
+        private void showConfirm(string title, string message, Action onConfirm)
+        {
+            dialogOverlay.Push(new ConfirmDialog(message, onConfirm)
+            {
+                HeaderText = title,
+                BodyText = message,
+                Icon = FontAwesome.Solid.Trash,
+                Buttons = new PopupDialogButton[]
+                {
+                    new PopupDialogDangerousButton
+                    {
+                        Text = "删除",
+                        Action = onConfirm,
+                    },
+                    new PopupDialogCancelButton
+                    {
+                        Text = "取消",
+                    },
+                },
+            });
+        }
+
         // -------- 本地音乐 --------
+
+        /// <summary>本地库的过滤关键词（歌名或歌手任一命中即显示）。</summary>
+        private string localFilter = string.Empty;
 
         private void buildLocal()
         {
-            currentList = player.LocalTracks.ToList();
             contentHost.Clear();
 
             var importButton = new OsuPlayerButton
@@ -972,9 +1191,24 @@ namespace OsuPlayer.Game.Screens.Components
                 RelativeSizeAxes = Axes.X,
                 AutoSizeAxes = Axes.Y,
             };
-            hint.AddText("支持 osu! 谱面（.osz / .olz）与 mp3 / flac / wav / ogg / m4a 等音频，可多选", t => t.Colour = Color4.Gray);
+            hint.AddText("支持 osu! 谱面包（.osz / .olz）、.osu timing 文件与 mp3 / flac / wav / ogg / m4a 等音频，可多选；也可以直接把文件拖进窗口导入", t => t.Colour = Color4.Gray);
 
-            var flow = new FillFlowContainer<Drawable>
+            var searchBox = new OsuTextBox
+            {
+                RelativeSizeAxes = Axes.X,
+                PlaceholderText = "搜索本地音乐（歌名或歌手）",
+                Text = localFilter,
+            };
+
+            var rowsHost = new FillFlowContainer<Drawable>
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 6),
+            };
+
+            contentHost.Add(new FillFlowContainer
             {
                 RelativeSizeAxes = Axes.X,
                 AutoSizeAxes = Axes.Y,
@@ -989,14 +1223,46 @@ namespace OsuPlayer.Game.Screens.Components
                         Direction = FillDirection.Vertical,
                         Spacing = new Vector2(0, 6),
                         Margin = new MarginPadding { Bottom = 8 },
-                        Children = new Drawable[] { importButton, hint },
+                        Children = new Drawable[]
+                        {
+                            new FillFlowContainer
+                            {
+                                AutoSizeAxes = Axes.Both,
+                                Direction = FillDirection.Horizontal,
+                                Spacing = new Vector2(18, 0),
+                                Children = new Drawable[] { importButton, buildSelectionToolbar() },
+                            },
+                            hint,
+                            searchBox,
+                        },
                     },
+                    rowsHost,
                 },
-            };
+            });
 
-            contentHost.Add(flow);
+            searchBox.Current.BindValueChanged(e =>
+            {
+                localFilter = e.NewValue ?? string.Empty;
+                rebuildLocalRows(rowsHost);
+            }, true);
+        }
 
-            if (currentList.Count == 0)
+        /// <summary>按当前过滤词重建本地列表；行容器整体换掉，旧的逐帧添加到一半也会自动停下。</summary>
+        private void rebuildLocalRows(FillFlowContainer<Drawable> host)
+        {
+            host.Clear();
+
+            string keyword = localFilter.Trim();
+            List<SongInfo> all = player.LocalTracks.ToList();
+
+            List<SongInfo> matches = keyword.Length == 0
+                ? all
+                : all.Where(song => matchesLocalFilter(song, keyword)).ToList();
+
+            // 点击播放走的是 currentList，列表被过滤后应该只在命中结果里连播。
+            currentList = matches;
+
+            if (all.Count == 0)
             {
                 var empty = new TextFlowContainer(t => t.Font = OsuFont.GetFont(size: 20))
                 {
@@ -1004,13 +1270,28 @@ namespace OsuPlayer.Game.Screens.Components
                     AutoSizeAxes = Axes.Y,
                 };
                 empty.AddText("本地库为空，点上面的按钮导入。", t => t.Colour = Color4.LightGray);
-                flow.Add(empty);
+                host.Add(empty);
+                return;
             }
-            else
+
+            if (matches.Count == 0)
             {
-                addSongRowsBatched(flow, currentList);
+                var empty = new TextFlowContainer(t => t.Font = OsuFont.GetFont(size: 20))
+                {
+                    RelativeSizeAxes = Axes.X,
+                    AutoSizeAxes = Axes.Y,
+                };
+                empty.AddText($"没有找到包含“{keyword}”的歌曲或歌手。", t => t.Colour = Color4.LightGray);
+                host.Add(empty);
+                return;
             }
+
+            addSongRowsBatched(host, matches, (row, song) => decorateManageableRow(PanelKind.Local, row, song));
         }
+
+        private static bool matchesLocalFilter(SongInfo song, string keyword)
+            => song.Name.Contains(keyword, StringComparison.OrdinalIgnoreCase)
+               || song.Artist.Contains(keyword, StringComparison.OrdinalIgnoreCase);
 
         private async void importLocalAsync()
         {
@@ -1046,23 +1327,25 @@ namespace OsuPlayer.Game.Screens.Components
             {
                 AppLog.Ui.Add($"本地导入失败：{e.Message}", LogLevel.Error, e);
             }
-
-            Schedule(() =>
-            {
-                if (currentKind == PanelKind.Local)
-                    buildLocal();
-            });
         }
 
         // -------- Playlists --------
 
         private async void buildPlaylists()
         {
+            int version = contentVersion;
             setPlaceholder("加载中…");
 
             try
             {
                 IReadOnlyList<PlaylistInfo> playlists = await player.GetPlaylistsAsync();
+
+                if (version != contentVersion)
+                {
+                    AppLog.Ui.Add($"歌单广场结果已过期（页面已切换），丢弃 {playlists.Count} 个歌单");
+                    return;
+                }
+
                 AppLog.Ui.Add($"歌单广场渲染：{playlists.Count} 个歌单");
                 contentHost.Clear();
 
@@ -1088,7 +1371,9 @@ namespace OsuPlayer.Game.Screens.Components
             catch (Exception e)
             {
                 AppLog.Ui.Add($"歌单广场加载失败：{e.Message}", LogLevel.Error, e);
-                setPlaceholder($"加载失败：{e.Message}");
+
+                if (version == contentVersion)
+                    setPlaceholder($"加载失败：{e.Message}");
             }
         }
 
@@ -1096,16 +1381,27 @@ namespace OsuPlayer.Game.Screens.Components
         {
             AppLog.Ui.Add($"打开歌单：《{playlist.Name}》（collection {playlist.CollectionId}）", LogLevel.Important);
             pushNavigation(playlist.Name, buildPlaylists);
+            int version = contentVersion;
             setPlaceholder("加载中…");
 
             try
             {
-                showSongs(await player.GetPlaylistTracksAsync(playlist.CollectionId));
+                IReadOnlyList<SongInfo> songs = await player.GetPlaylistTracksAsync(playlist.CollectionId);
+
+                if (version != contentVersion)
+                {
+                    AppLog.Ui.Add($"歌单歌曲结果已过期（页面已切换），丢弃《{playlist.Name}》的 {songs.Count} 首");
+                    return;
+                }
+
+                showSongs(songs);
             }
             catch (Exception e)
             {
                 AppLog.Ui.Add($"歌单歌曲加载失败《{playlist.Name}》：{e.Message}", LogLevel.Error, e);
-                setPlaceholder($"加载失败：{e.Message}");
+
+                if (version == contentVersion)
+                    setPlaceholder($"加载失败：{e.Message}");
             }
         }
 

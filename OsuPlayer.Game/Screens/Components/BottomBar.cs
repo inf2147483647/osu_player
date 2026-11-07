@@ -1,14 +1,21 @@
+using System.IO;
+using System.Text;
 using osu.Framework.Allocation;
 using osu.Framework.Bindables;
 using osu.Framework.Graphics;
 using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Sprites;
+using osu.Game.Beatmaps;
 using osu.Game.Graphics;
+using osu.Game.Overlays;
+using osu.Game.Overlays.Notifications;
 using osuTK;
 using osuTK.Graphics;
 using OsuPlayer.Game.Logging;
 using osu.Framework.Logging;
 using OsuPlayer.Game.Music;
+using OsuPlayer.Game.Music.BeatSync;
+using OsuPlayer.Game.Net;
 
 namespace OsuPlayer.Game.Screens.Components
 {
@@ -27,6 +34,12 @@ namespace OsuPlayer.Game.Screens.Components
         [Resolved]
         private PlaybackOptionsPopup optionsPopup { get; set; } = null!;
 
+        [Resolved]
+        private IBeatSyncProvider beatSync { get; set; } = null!;
+
+        [Resolved]
+        private INotificationOverlay notifications { get; set; } = null!;
+
         public Action<PanelKind>? OnNavigate;
 
         private UiIconButton repeatButton = null!;
@@ -43,7 +56,7 @@ namespace OsuPlayer.Game.Screens.Components
         /// <summary>最底那一行：进度条 + 右侧工具按钮。</summary>
         private Container bottomRow = null!;
 
-        /// <summary>底行右侧的六个功能图标（自动尺寸，用来给进度条留出宽度）。</summary>
+        /// <summary>底行右侧的七个功能图标（自动尺寸，用来给进度条留出宽度）。</summary>
         private FillFlowContainer toolsRow = null!;
 
         /// <summary>进度条左端与窗口左边距之间的距离（时间文字 + 空隙）。</summary>
@@ -58,8 +71,8 @@ namespace OsuPlayer.Game.Screens.Components
         /// <summary>「00:00」还没量出宽度时用的兜底值（字体 26、格式固定）。</summary>
         private const float fallback_time_width = 92;
 
-        /// <summary>六个工具按钮还没量出宽度时用的兜底值：图标 20 + 两侧 9 留白 ×6，加 5 个 20 间距。</summary>
-        private const float fallback_tools_width = 6 * 38 + 5 * 20;
+        /// <summary>七个工具按钮还没量出宽度时用的兜底值：图标 20 + 两侧 9 留白 ×7，加 6 个 20 间距。</summary>
+        private const float fallback_tools_width = 7 * 38 + 6 * 20;
 
         /// <summary>进度条的取值范围（只由进度条写入，避免与播放循环抢同一个 bindable）。</summary>
         private readonly BindableNumber<double> seekRange = new BindableNumber<double>(0);
@@ -149,6 +162,7 @@ namespace OsuPlayer.Game.Screens.Components
                                 tempoButton = new UiIconButton(FontAwesome.Solid.TachometerAlt, showTempoOptions, 20, "倍数 1.00"),
                                 qualityButton = new UiIconButton(FontAwesome.Solid.Headphones, showQualityOptions, 20, "音质 标准"),
                                 new UiIconButton(FontAwesome.Solid.ListUl, () => OnNavigate?.Invoke(PanelKind.Queue), 20, "播放队列"),
+                                new UiIconButton(FontAwesome.Solid.FileExport, exportTiming, 20, "导出 timing（.osu）"),
                             },
                         },
                     },
@@ -311,6 +325,69 @@ namespace OsuPlayer.Game.Screens.Components
         private void showTempoOptions() => optionsPopup.ShowTempo(buttonAnchor(tempoButton));
 
         private void showQualityOptions() => optionsPopup.ShowQuality(buttonAnchor(qualityButton));
+
+        /// <summary>
+        /// 把当前曲目正在使用的时间轴导出为 .osu（客串难度）：
+        /// 谱面作者自带的时间轴优先，其次用节拍分析得到的时间轴，最后由用户选择保存位置。
+        /// </summary>
+        private async void exportTiming()
+        {
+            if (player.CurrentSong.Value is not { } song)
+            {
+                notify("先播放一首歌，再导出它的 timing。");
+                return;
+            }
+
+            BeatmapTiming? timing = null;
+
+            if (beatSync is MusicBeatSyncProvider provider && provider.TimingOwnerHash == song.Hash)
+                timing = provider.CurrentTiming;
+
+            timing ??= song.Timing;
+
+            if (timing is not { Lines.Count: > 0 })
+            {
+                AppLog.Ui.Add($"导出 timing 失败：{song.DisplayText} 还没有时间轴", LogLevel.Important);
+                notify("这首歌还没有 timing 信息，等节拍分析完成后再试。");
+                return;
+            }
+
+            string suggested = OsuTimingExporter.SuggestedFileName(song);
+            string? path;
+
+            try
+            {
+                // comdlg32 的保存对话框会阻塞，必须放到后台线程。
+                path = await Task.Run(() => FilePicker.PickSaveFile(suggested, "osu! 谱面 (*.osu)\0*.osu\0所有文件\0*.*\0\0"));
+            }
+            catch (Exception e)
+            {
+                AppLog.Ui.Add($"打开保存对话框失败：{e.Message}", LogLevel.Error, e);
+                notify("打开保存对话框失败，详情见运行日志。");
+                return;
+            }
+
+            if (string.IsNullOrEmpty(path))
+            {
+                AppLog.Ui.Add("导出 timing 已取消");
+                return;
+            }
+
+            try
+            {
+                await File.WriteAllTextAsync(path, OsuTimingExporter.Build(song, timing), new UTF8Encoding(false));
+                AppLog.Ui.Add($"已导出 timing：{path}", LogLevel.Important);
+                notify($"已导出 timing：{Path.GetFileName(path)}");
+            }
+            catch (Exception e)
+            {
+                AppLog.Ui.Add($"导出 timing 失败：{e.Message}", LogLevel.Error, e);
+                notify("导出失败，详情见运行日志。");
+            }
+        }
+
+        private void notify(string message)
+            => Schedule(() => notifications.Post(new SimpleNotification { Text = message, IsImportant = true }));
 
         private static Vector2 buttonAnchor(Drawable button) => button.ScreenSpaceDrawQuad.TopLeft;
 

@@ -19,9 +19,14 @@
     <AndroidPackageFormat>apk</AndroidPackageFormat>
     <!-- 中文字体/CJK 区域化资源，否则 osu!framework 的文本渲染在非英文环境会缺字。 -->
     <MandroidI18n>CJK;Mideast;Rare;West;Other;</MandroidI18n>
-    <!-- 不设 AndroidHttpClientHandlerType：保持 .NET 默认的托管 SocketsHttpHandler（与 osu! 上游一致）。
-         AndroidMessageHandler 会把流量路由进 Java 的 HttpURLConnection 栈，在那里 KuGou 的 http://
-         直链被 cleartext 策略/连接失败吃掉，只抛出一条 "failure"；托管栈用 BoringSSL 直连，无此问题。 -->
+    <!-- .NET 10 for Android 默认的 HttpClient 处理器是 Xamarin.Android.Net.AndroidMessageHandler
+         （Java / HttpURLConnection 栈，见 Microsoft.Android.Sdk.DefaultProperties.targets 第 10 行），
+         它受 Android cleartext 策略约束：targetSdk 36 下访问酷狗 http:// 直链会直接失败，
+         异常信息只有一句 "failure"。这个 SDK 不允许把 AndroidHttpClientHandlerType 指向
+         SocketsHttpHandler（会报 XA1032），所以需要联网的代码一律显式 new SocketsHttpHandler，
+         见 MusicBeatSyncProvider / BeatThisAssets / HttpResourceStore。
+         UseNativeHttpHandler=false 供 .NET 11 SDK 生效时使用。 -->
+    <UseNativeHttpHandler>false</UseNativeHttpHandler>
     <!-- Android 默认关闭 NullabilityInfoContext，Newtonsoft 等反射路径需要它。 -->
     <NullabilityInfoContextSupport>true</NullabilityInfoContextSupport>
     <!-- 程序集必须打进 APK，否则只能走 fast deployment（脱离 IDE 装不上）。 -->

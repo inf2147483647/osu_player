@@ -48,6 +48,8 @@ namespace OsuPlayer.Game.Music.BeatSync.Onnx
                 config.FftN = root.Value<int?>("fft_n") ?? config.FftN;
                 config.Hop = root.Value<int?>("hop") ?? config.Hop;
                 config.OverrideMargin = root.Value<double?>("override_margin") ?? config.OverrideMargin;
+                config.DoublingProbabilityMin = root.Value<double?>("doubling_probability_min") ?? config.DoublingProbabilityMin;
+                config.DoublingGapMax = root.Value<double?>("doubling_gap_max") ?? config.DoublingGapMax;
                 config.Model = root.Value<string>("model") ?? config.Model;
             }
             catch
@@ -67,6 +69,15 @@ namespace OsuPlayer.Game.Music.BeatSync.Onnx
 
         /// <summary>保守覆盖阈值：模型概率相对「显著度最强候选」的领先不足此值时，保留后者。</summary>
         public double OverrideMargin = 0.1;
+
+        /// <summary>
+        /// 倍频抑制：首选 BPM 恰好是另一候选的 2×/4× 时，若低候选概率不低于此值，允许降到低层级。
+        /// 用户实际使用中只出现「偏快一倍」，没有「偏慢一半」，所以这里只向下修正。
+        /// </summary>
+        public double DoublingProbabilityMin = 0.10;
+
+        /// <summary>倍频抑制：首选与低候选的概率差不超过此值才降级；差距太大说明模型很有把握。</summary>
+        public double DoublingGapMax = 0.16;
 
         public string Model = "unknown";
 

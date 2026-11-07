@@ -10,5 +10,6 @@
 
   <application android:label="osu!_player"
                android:allowBackup="true"
-               android:supportsRtl="true" />
+               android:supportsRtl="true"
+               android:usesCleartextTraffic="true" />
 </manifest>

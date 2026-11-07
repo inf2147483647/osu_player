@@ -39,6 +39,13 @@ namespace OsuPlayer.Game
         };
 
         /// <summary>
+        /// osu! 原生弹窗层：删除确认等使用 osu! 的 <see cref="DialogOverlay"/>，
+        /// 外观、音效、键盘/手柄操作与 osu! 本体一致。
+        /// </summary>
+        [Cached(typeof(IDialogOverlay))]
+        private readonly DialogOverlay dialogs = new DialogOverlay();
+
+        /// <summary>
         /// osu!'s overlay theme colours. Several osu! controls (SwitchButton, DialogButton, …) resolve
         /// this from their parent tree; osu! ships it per-screen, so the game caches one for every
         /// overlay we host. Pink matches the design draft.
@@ -93,6 +100,31 @@ namespace OsuPlayer.Game
         /// <summary>单曲 BPM 推理（<c>--detect-bpm &lt;音频文件&gt;</c>）：打印 BPM 与分阶段耗时。</summary>
         private readonly string? bpmDetectFile;
 
+        /// <summary>
+        /// C# 原生 BPM 特征导出（<c>--export-bpm-features &lt;manifest.json&gt; &lt;features.csv&gt;</c>）：
+        /// 对 training 清单里的已下载音频跑 <see cref="BpmFeatureBuilder"/>，输出与 C# 推理逐位同源的
+        /// 候选特征与标签，供 Python 训练后回灌 ONNX。写完退出。
+        /// </summary>
+        private readonly string? bpmFeatureManifestPath;
+
+        private readonly string? bpmFeatureOutputPath;
+
+        /// <summary>
+        /// C# 原生 BPM 端到端评测（<c>--eval-user-bpm &lt;manifest.json&gt; &lt;report.txt&gt;</c>）：
+        /// 用完整原生分析管线（含 BpmMl）逐首跑用户手改 timing 的音频，报告原生/模型/真值。
+        /// </summary>
+        private readonly string? bpmUserEvalManifestPath;
+
+        private readonly string? bpmUserEvalReportPath;
+
+        /// <summary>
+        /// 在 C# 导出的特征 CSV 上直接评测 BpmMl（<c>--eval-bpm-features &lt;features.csv&gt; &lt;report.txt&gt;</c>）：
+        /// 不解码音频、不重算特征，秒级完成，专门验收「C# 特征 → C# 模型」链路。
+        /// </summary>
+        private readonly string? bpmFeatureEvalPath;
+
+        private readonly string? bpmFeatureEvalReportPath;
+
         /// <summary>评论诊断（<c>--comments &lt;hash&gt; &lt;mixsongid&gt; [歌名]</c>）：抓一页评论打印出来。
         /// 评论是纯网络接口、不便单测，用它验证真实的请求签名与解析路径。</summary>
         private readonly string[]? commentProbe;
@@ -144,6 +176,24 @@ namespace OsuPlayer.Game
                     bpmDetectFile = args[i + 1];
                 else if (args[i].StartsWith("--detect-bpm=", StringComparison.Ordinal))
                     bpmDetectFile = args[i]["--detect-bpm=".Length..];
+                else if (args[i] == "--export-bpm-features" && i + 2 < args.Length)
+                {
+                    bpmFeatureManifestPath = args[i + 1];
+                    bpmFeatureOutputPath = args[i + 2];
+                    i += 2;
+                }
+                else if (args[i] == "--eval-user-bpm" && i + 2 < args.Length)
+                {
+                    bpmUserEvalManifestPath = args[i + 1];
+                    bpmUserEvalReportPath = args[i + 2];
+                    i += 2;
+                }
+                else if (args[i] == "--eval-bpm-features" && i + 2 < args.Length)
+                {
+                    bpmFeatureEvalPath = args[i + 1];
+                    bpmFeatureEvalReportPath = args[i + 2];
+                    i += 2;
+                }
                 else if (args[i] == "--comments" && i + 2 < args.Length)
                     commentProbe = args.Skip(i + 1).Take(args.Length - i - 1).ToArray();
                 else if (args[i] == "--diagnostics")
@@ -169,6 +219,7 @@ namespace OsuPlayer.Game
 
             // Added last so toasts and the history overlay draw above the whole screen stack.
             Content.Add(notifications);
+            Content.Add(dialogs);
 
             // 右下角帧率：直接复用 osu! 本体的 FPSCounter（Anchor.BottomRight + 边距 5，与 osu! 一致），
             // 它自己读 OsuSetting.ShowFpsDisplay 控制显隐，并显示 FPS 与帧时间，不再另造一个计数器。
@@ -213,6 +264,24 @@ namespace OsuPlayer.Game
             if (bpmDetectFile is not null)
             {
                 _ = runDetectBpmAsync();
+                return;
+            }
+
+            if (bpmFeatureManifestPath is not null && bpmFeatureOutputPath is not null)
+            {
+                _ = runBpmFeatureExportAsync();
+                return;
+            }
+
+            if (bpmUserEvalManifestPath is not null && bpmUserEvalReportPath is not null)
+            {
+                _ = runUserBpmEvalAsync();
+                return;
+            }
+
+            if (bpmFeatureEvalPath is not null && bpmFeatureEvalReportPath is not null)
+            {
+                _ = runBpmFeatureEvalAsync();
                 return;
             }
 
@@ -431,6 +500,66 @@ namespace OsuPlayer.Game
             catch (Exception e)
             {
                 Console.Error.WriteLine($"BPM 评测失败：{e}");
+                Console.Error.Flush();
+            }
+            finally
+            {
+                Schedule(() => Host.Exit());
+            }
+        }
+
+        private async Task runBpmFeatureExportAsync()
+        {
+            try
+            {
+                string summary = await BeatmapTraining.ExportBpmFeaturesAsync(
+                    bpmFeatureManifestPath!, bpmFeatureOutputPath!).ConfigureAwait(false);
+                Console.WriteLine(summary);
+                Console.Out.Flush();
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"BPM 原生特征导出失败：{e}");
+                Console.Error.Flush();
+            }
+            finally
+            {
+                Schedule(() => Host.Exit());
+            }
+        }
+
+        private async Task runUserBpmEvalAsync()
+        {
+            try
+            {
+                string report = await BeatmapTraining.EvaluateUserBpmAsync(
+                    bpmUserEvalManifestPath!, bpmUserEvalReportPath!).ConfigureAwait(false);
+                Console.WriteLine(report);
+                Console.Out.Flush();
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"用户 BPM 端到端评测失败：{e}");
+                Console.Error.Flush();
+            }
+            finally
+            {
+                Schedule(() => Host.Exit());
+            }
+        }
+
+        private async Task runBpmFeatureEvalAsync()
+        {
+            try
+            {
+                string summary = await BeatmapTraining.EvaluateBpmFeaturesAsync(
+                    bpmFeatureEvalPath!, bpmFeatureEvalReportPath!).ConfigureAwait(false);
+                Console.WriteLine(summary);
+                Console.Out.Flush();
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"C# 原生特征评测失败：{e}");
                 Console.Error.Flush();
             }
             finally
