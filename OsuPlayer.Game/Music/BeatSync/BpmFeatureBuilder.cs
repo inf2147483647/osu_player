@@ -14,7 +14,12 @@ namespace OsuPlayer.Game.Music.BeatSync
     ///   单声道 float 采样 → 分帧 STFT(1024/hop256, Hann) → log(1+幅度)
     ///   → 逐帧半波整流频谱通量 → 去局部均值 + 归一化 = onset 包络
     ///   → 无偏自相关 → 谐波求和得 tempo 显著度（BPM 网格 40–260 步长 0.5）
-    ///   → 显著度峰派生候选 → 逐候选 14 维特征
+    ///   → 显著度峰派生候选 → 逐候选 18 维特征
+    ///
+    /// 最后 4 维专门区分「真慢歌」与「被抬高一倍」：低频（20–200Hz，kick/bass）各自的
+    /// tempo 显著度比，以及色度（和声）在候选拍长/一倍/一半上的平均变化量之比。
+    /// 起音包络对这两者不敏感 —— 慢歌的八分音符照样有能量，只有低频重复周期和
+    /// 和声切换周期能说明「哪一层才是真正的拍」。
     ///
     /// 注意：这里刻意不复用 BASS 的 FFT512 —— 那只有 86fps，在 200BPM 处一个 lag 就跨好几 BPM，
     /// 而评估容差是 4%·gt。1024/256 在 44.1k 下是 172fps，与 Python 端一致。
@@ -30,7 +35,13 @@ namespace OsuPlayer.Game.Music.BeatSync
         public const int MaxCandidates = 20;
         public const double MinCandidateSeparation = 3.0;
         public const int CandidatePeaks = 5;
-        public const int FeatureCount = 14;
+        public const int FeatureCount = 18;
+
+        private const double low_band_hz = 200;
+        private const double chroma_low_hz = 90;
+        private const double chroma_high_hz = 2000;
+        private const int chroma_bins = 12;
+        private const double ratio_epsilon = 1e-3;
 
         /// <summary>BPM 网格点数（与 Python 的 np.arange(40, 260+eps, 0.5) 等长）。</summary>
         public static readonly int BpmGridLength = (int)Math.Round((BpmMax - BpmMin) / BpmStep) + 1;
@@ -42,14 +53,29 @@ namespace OsuPlayer.Game.Music.BeatSync
 
         public static double BpmAt(int index) => BpmMin + index * BpmStep;
 
+        /// <summary>
+        /// 一次 STFT 同时产出的三样东西：全频带 onset、低频 onset（20–200Hz）和逐帧色度。
+        /// 训练与推理都只走这一个入口，保证两边口径完全一致。
+        /// </summary>
+        public sealed record RhythmFeatures(double[] Onset, double Fps, double[] LowOnset,
+                                            float[] Chroma, int ChromaFrames);
+
         /// <summary>频谱通量 onset 包络；fps = 采样率 / hop。</summary>
         public static double[] OnsetEnvelope(float[] samples, int sampleRate, out double fps)
         {
-            fps = (double)sampleRate / Hop;
+            RhythmFeatures rhythm = Analyse(samples, sampleRate);
+            fps = rhythm.Fps;
+            return rhythm.Onset;
+        }
+
+        /// <summary>单次分帧 STFT：全频带/低频频谱通量 + 12 维色度（逐帧能量归一化由消费者做）。</summary>
+        public static RhythmFeatures Analyse(float[] samples, int sampleRate)
+        {
+            double fps = (double)sampleRate / Hop;
             int frames = 1 + (samples.Length - FftN) / Hop;
 
             if (frames < 4)
-                return new double[1];
+                return new RhythmFeatures(new double[1], fps, new double[1], Array.Empty<float>(), 0);
 
             // np.hanning 是对称窗（分母 N-1），不是周期窗。
             var window = new double[FftN];
@@ -58,7 +84,11 @@ namespace OsuPlayer.Game.Music.BeatSync
                 window[i] = 0.5 - 0.5 * Math.Cos(2 * Math.PI * i / (FftN - 1));
 
             int bins = FftN / 2 + 1;
+            int lowBinMax = Math.Clamp((int)Math.Round(low_band_hz * FftN / sampleRate), 2, bins - 1);
+            int[] pitchClass = buildPitchClassTable(sampleRate);
             var flux = new double[frames - 1];
+            var lowFlux = new double[frames - 1];
+            var chroma = new float[frames * chroma_bins];
 
             // 帧循环按块并行：每块内部自己算 log 幅度、自己写自己区间的 flux，
             // 块之间没有共享写入，结果与串行逐位相同（同一帧无论谁算都是同一串浮点运算）。
@@ -76,10 +106,13 @@ namespace OsuPlayer.Game.Music.BeatSync
                 var current = new double[bins];
 
                 computeLogMagnitude(re, im, samples, window, start, prev);
+                accumulateChroma(prev, pitchClass, chroma, start);
 
                 for (int t = start + 1; t < end; t++)
                 {
                     computeLogMagnitude(re, im, samples, window, t, current);
+                    accumulateChroma(current, pitchClass, chroma, t);
+
                     double sum = 0;
 
                     for (int k = 0; k < bins; k++)
@@ -91,12 +124,32 @@ namespace OsuPlayer.Game.Music.BeatSync
                     }
 
                     flux[t - 1] = sum;
+
+                    double lowSum = 0;
+
+                    for (int k = 1; k <= lowBinMax; k++)
+                    {
+                        double d = current[k] - prev[k];
+
+                        if (d > 0)
+                            lowSum += d;
+                    }
+
+                    lowFlux[t - 1] = lowSum;
                     (prev, current) = (current, prev);
                 }
             });
 
-            // 去局部均值（约 1 秒窗）后整流，再按总体标准差归一化。
-            double[] local = MovingAverage(flux, Math.Max(1, (int)Math.Round((double)sampleRate / Hop)));
+            int windowFrames = Math.Max(1, (int)Math.Round(fps));
+
+            return new RhythmFeatures(normaliseOnset(flux, windowFrames), fps,
+                normaliseOnset(lowFlux, windowFrames), chroma, frames);
+        }
+
+        /// <summary>去局部均值后整流，再按总体标准差归一化（与 Python 的 _moving_average 一致）。</summary>
+        private static double[] normaliseOnset(double[] flux, int windowFrames)
+        {
+            double[] local = MovingAverage(flux, windowFrames);
             var onset = new double[flux.Length];
             double total = 0;
 
@@ -126,6 +179,45 @@ namespace OsuPlayer.Game.Music.BeatSync
             }
 
             return onset;
+        }
+
+        /// <summary>把第 t 帧的频谱能量按音高类累进 12 维色度（幅度从 log(1+mag) 还原）。</summary>
+        private static void accumulateChroma(double[] logMagnitude, int[] pitchClass, float[] chroma, int frame)
+        {
+            int offset = frame * chroma_bins;
+
+            for (int k = 0; k < pitchClass.Length; k++)
+            {
+                int pitch = pitchClass[k];
+
+                if (pitch < 0)
+                    continue;
+
+                chroma[offset + pitch] += (float)(Math.Exp(logMagnitude[k]) - 1);
+            }
+        }
+
+        /// <summary>FFT bin → 音高类（90–2000Hz），范围外记 -1。</summary>
+        private static int[] buildPitchClassTable(int sampleRate)
+        {
+            int bins = FftN / 2 + 1;
+            var table = new int[bins];
+
+            for (int k = 0; k < bins; k++)
+            {
+                double hz = (double)k * sampleRate / FftN;
+
+                if (hz < chroma_low_hz || hz > chroma_high_hz)
+                {
+                    table[k] = -1;
+                    continue;
+                }
+
+                double midi = 69 + 12 * Math.Log2(hz / 440.0);
+                table[k] = ((int)Math.Round(midi) % chroma_bins + chroma_bins) % chroma_bins;
+            }
+
+            return table;
         }
 
         /// <summary>第 t 帧的 log(1+幅度谱)，写入 <paramref name="destination"/>（长度 513）。</summary>
@@ -345,8 +437,8 @@ namespace OsuPlayer.Game.Music.BeatSync
             return BpmAt(index);
         }
 
-        /// <summary>逐候选 14 维特征，按候选顺序拼成一段连续的 float（供 ONNX 输入）。</summary>
-        public static float[] Features(double[] salience, IReadOnlyList<double> candidates)
+        /// <summary>逐候选 18 维特征，按候选顺序拼成一段连续的 float（供 ONNX 输入）。</summary>
+        public static float[] Features(double[] salience, IReadOnlyList<double> candidates, RhythmFeatures rhythm)
         {
             var features = new float[candidates.Count * FeatureCount];
             double max = 0;
@@ -359,6 +451,18 @@ namespace OsuPlayer.Game.Music.BeatSync
 
             if (max <= 1e-12)
                 max = 1.0;
+
+            double[] lowSalience = Salience(rhythm.LowOnset, rhythm.Fps);
+            double maxLow = 0;
+
+            foreach (double v in lowSalience)
+            {
+                if (v > maxLow)
+                    maxLow = v;
+            }
+
+            if (maxLow <= 1e-12)
+                maxLow = 1.0;
 
             for (int rank = 0; rank < candidates.Count; rank++)
             {
@@ -393,9 +497,71 @@ namespace OsuPlayer.Game.Music.BeatSync
 
                 features[index + 12] = (float)(localMean > 1e-12 ? self / localMean : 1.0);
                 features[index + 13] = (float)(self / max);
+
+                // 低频：kick/bass 只按真正的拍重复。候选若被抬高一倍，它在半拍处同样强，
+                // 所以「候选 BPM 的低频显著度 / 两倍 BPM 的低频显著度」能从正面证伪倍频。
+                double lowSelf = SalienceAt(lowSalience, bpm);
+                double lowDouble = SalienceAt(lowSalience, bpm * 2.0);
+                features[index + 14] = (float)(lowSelf / maxLow);
+                features[index + 15] = (float)ratio(lowSelf, lowDouble);
+
+                // 和声：和弦通常按拍切换。候选拍长上的色度变化应当明显大于两倍拍长
+                // （同一和弦内部）和半拍（和弦还没换）。三个比值一起交给分类器。
+                double changeSelf = meanChromaChange(rhythm, bpm);
+                double changeDouble = meanChromaChange(rhythm, bpm * 2.0);
+                double changeHalf = meanChromaChange(rhythm, bpm * 0.5);
+                features[index + 16] = (float)ratio(changeSelf, changeDouble);
+                features[index + 17] = (float)ratio(changeSelf, changeHalf);
             }
 
             return features;
+        }
+
+        /// <summary>log2 比值，带下限保护并截断到 [-4,4]（避免静音段产生极端值）。</summary>
+        private static double ratio(double a, double b)
+        {
+            double value = Math.Log2((a + ratio_epsilon) / (b + ratio_epsilon));
+            return Math.Clamp(value, -4, 4);
+        }
+
+        /// <summary>候选拍长上相邻两拍的平均色度变化量（1 - 余弦相似度）。</summary>
+        private static double meanChromaChange(RhythmFeatures rhythm, double bpm)
+        {
+            if (rhythm.ChromaFrames < 2 || bpm <= 0 || rhythm.Fps <= 0)
+                return 0;
+
+            double lag = 60.0 * rhythm.Fps / bpm;
+
+            if (lag < 1.5)
+                return 0;
+
+            int lagFrames = (int)Math.Round(lag);
+            double sum = 0;
+            int count = 0;
+
+            for (int t = 0; t + lagFrames < rhythm.ChromaFrames; t += lagFrames)
+            {
+                int a = t * chroma_bins;
+                int b = (t + lagFrames) * chroma_bins;
+                double dot = 0, normA = 0, normB = 0;
+
+                for (int k = 0; k < chroma_bins; k++)
+                {
+                    double x = rhythm.Chroma[a + k];
+                    double y = rhythm.Chroma[b + k];
+                    dot += x * y;
+                    normA += x * x;
+                    normB += y * y;
+                }
+
+                if (normA < 1e-9 || normB < 1e-9)
+                    continue;
+
+                sum += 1 - dot / Math.Sqrt(normA * normB);
+                count++;
+            }
+
+            return count > 0 ? sum / count : 0;
         }
 
         #region FFT

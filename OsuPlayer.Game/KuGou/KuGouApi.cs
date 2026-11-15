@@ -167,13 +167,21 @@ namespace OsuPlayer.Game.KuGou
             return text.Length <= 400 ? text : text[..400] + "…";
         }
         /// <summary>
-        /// Query the account's 概念版 products (KuGouMusicApi/module/user_vip_detail.js).
-        /// Shape: { status:1, data:{ busi_vip:[{ product_type, is_vip, vip_begin_time, vip_end_time }] } }
+        /// Query the account's 概念版 products (KuGouMusicApi/module/youth_union_vip.js).
+        /// <c>opt_product_types</c> 让服务端一并返回 dvip / qvip，<c>product_type=svip</c> 取概念会员视图，
+        /// 这样一次请求就能拿到账号面板需要的全部档位（EchoMusic 同样走 /youth/union/vip）。
+        /// Shape: { status:1, data:{ user_type, vip_type, vip_end_time, su_vip_end_time,
+        /// busi_vip:[{ product_type, is_vip, vip_begin_time, vip_end_time }] } }
         /// where product_type is tvip (畅听会员) / svip (概念会员).
         /// </summary>
         public Task<JObject> GetUserVipDetailAsync(CancellationToken ct = default)
         {
-            var query = new Dictionary<string, object?> { ["busi_type"] = "concept" };
+            var query = new Dictionary<string, object?>
+            {
+                ["busi_type"] = "concept",
+                ["opt_product_types"] = "dvip,qvip",
+                ["product_type"] = "svip",
+            };
 
             return client.SendAsync(new KuGouApiRequest(
                 HttpMethod.Get,

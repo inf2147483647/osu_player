@@ -151,10 +151,13 @@ namespace OsuPlayer.Game.Music.BeatSync
             BeatEstimate? engineB = engineBRaw is { Bpm: > 0 } ? engineBRaw : null;
 
             (double bpm, double confidence, double beatPhaseMs) = fuseTempo(engineA, engineB);
+            double nativeBpm = bpm;
 
             // Ballroom 698 首真值训练的全局 BPM 模型：自相关最强峰在近半数曲目上是标注节拍的
             // 二倍，原生测速会系统性选错 metrical 层级，这一步专门修层级。模型只决定 BPM，
             // 相位仍由下面的网格拟合给出；模型缺失/异常时完全沿用原生结果。
+            bool modelDecided = false;
+
             if (Onnx.BpmMl.IsAvailable)
             {
                 (float[] samples, int sampleRate) = DecodeMonoSamples(audio);
@@ -164,17 +167,42 @@ namespace OsuPlayer.Game.Music.BeatSync
                 {
                     AppLog.Beat.Add($"BPM 层级修正：原生 {bpm:0.##} → 模型 {modelBpm:0.##}");
                     bpm = modelBpm;
+                    modelDecided = true;
                 }
             }
 
             // 融合之后再仲裁一次八度/三连音：DP 在带 3-against-2 感觉的音乐上会锁到真 tactus 的
             // 2/3 或 1/2，而两个引擎会一致地同意（说明投票救不了），只有直接考察「网格对起音的
             // 解释力」才翻得正。顺带把相位精修一遍（也用于下面的重拍对齐）。
+            //
+            // 但模型已经用真值学过 metrical 层级时不再做速度仲裁：网格 F 值天然偏向更密的 2× 网格
+            // （2× 网格覆盖更多起音），会把模型判对的 91 又翻回 182（实测 6 首慢歌里 4 首被翻回）。
+            // 曾试过「只保留三连音族（1.5× / 2/3× / 3×）仲裁、仅禁止八度」，实测更差：
+            // 302 张完全正确 221 → 195、八度错 53 → 77，所以模型判级后不仲裁速度。
+            // 相位仍要重新对齐：模型折半时（182 → 91）融合相位只有一半概率落在新网格上，
+            // 另一半会整整差半拍；反向折返时融合相位也带着引擎 B 的延迟（实测 ~40ms）。
             double fusedBpm = bpm;
-            (bpm, beatPhaseMs) = refineTempoByGridFit(frames, hopRate, bpm, beatPhaseMs);
 
-            if (Math.Abs(bpm - fusedBpm) > 0.5)
-                AppLog.Beat.Add($"网格仲裁：融合值 {fusedBpm:0.##} → {bpm:0.##}");
+            if (modelDecided)
+            {
+                double alignedPhase = alignPhaseToTempo(frames, hopRate, nativeBpm, bpm, beatPhaseMs);
+
+                if (Math.Abs(alignedPhase - beatPhaseMs) > 1)
+                    AppLog.Beat.Add($"相位吸附：{beatPhaseMs:0}ms → {alignedPhase:0}ms（模型 BPM {bpm:0.##}）");
+
+                beatPhaseMs = alignedPhase;
+            }
+            else
+            {
+                (bpm, beatPhaseMs) = refineTempoByGridFit(frames, hopRate, bpm, beatPhaseMs);
+
+                if (Math.Abs(bpm - fusedBpm) > 0.5)
+                    AppLog.Beat.Add($"网格仲裁：融合值 {fusedBpm:0.##} → {bpm:0.##}");
+            }
+
+            // 起音能量无法区分相距半拍的两套网格（用户样本实测 0.82~1.24，基本打平），
+            // 但和声只会在真正的拍点上切换，用色度变化再判一次。
+            beatPhaseMs = refinePhaseByHarmony(frames, hopRate, bpm, beatPhaseMs);
 
             // The tempo engines only pin beats onto real onsets; which beat of the 4/4 measure is
             // the downbeat is a bar-level decision. Re-anchor the grid so that beatIndex % 4 == 0
@@ -328,9 +356,27 @@ namespace OsuPlayer.Game.Music.BeatSync
         // the 30 Hz..5 kHz rhythm bands and coarse 12-bin kiai chroma.
         private const int fft_bins = 256;
 
+        /// <summary>
+        /// 建立 BASS 解码流。训练/评测入口在 LoadComplete 里就开跑，可能抢在音频管理器
+        /// 完成 BASS_Init 之前；此时 CreateStream 只返回 error Init，稍等重试即可。
+        /// 其它错误（文件损坏/格式不支持）不重试，避免掩盖真实问题。
+        /// </summary>
+        private static int createDecodeStream(byte[] audio)
+        {
+            for (int attempt = 0; ; attempt++)
+            {
+                int handle = Bass.CreateStream(audio, 0, audio.Length, BassFlags.Decode | BassFlags.Float);
+
+                if (handle != 0 || Bass.LastError != Errors.Init || attempt >= 5)
+                    return handle;
+
+                Thread.Sleep(200);
+            }
+        }
+
         private static List<Frame> decodeFeatureFrames(byte[] audio)
         {
-            int handle = Bass.CreateStream(audio, 0, audio.Length, BassFlags.Decode | BassFlags.Float);
+            int handle = createDecodeStream(audio);
 
             if (handle == 0)
                 throw new InvalidOperationException($"BASS decode channel creation failed (error {Bass.LastError}).");
@@ -425,9 +471,11 @@ namespace OsuPlayer.Game.Music.BeatSync
         /// 与 <see cref="decodeFeatureFrames"/> 各自独立解码：两者时间基准不同（这里是采样点，
         /// 那边是 BASS 的 FFT512 帧中心），混用会引入对不齐的误差。
         /// </summary>
-        internal static (float[] Samples, int SampleRate) DecodeMonoSamples(byte[] audio)
+        internal static (float[] Samples, int SampleRate) DecodeMonoSamples(byte[] audio) => decodeMonoSamplesCore(audio);
+
+        private static (float[] Samples, int SampleRate) decodeMonoSamplesCore(byte[] audio)
         {
-            int handle = Bass.CreateStream(audio, 0, audio.Length, BassFlags.Decode | BassFlags.Float);
+            int handle = createDecodeStream(audio);
 
             if (handle == 0)
                 throw new InvalidOperationException($"BASS decode channel creation failed (error {Bass.LastError}).");
@@ -953,7 +1001,7 @@ namespace OsuPlayer.Game.Music.BeatSync
 
         private static BeatEstimate? decodeBassFxBeats(byte[] audio, double duration)
         {
-            int handle = Bass.CreateStream(audio, 0, audio.Length, BassFlags.Decode | BassFlags.Float);
+            int handle = createDecodeStream(audio);
 
             if (handle == 0)
                 return new BeatEstimate
@@ -1189,44 +1237,14 @@ namespace OsuPlayer.Game.Music.BeatSync
                 return (bpm, phaseMs);
 
             double[] envelope = buildOnsetEnvelope(frames);
+            List<int> onsets = findOnsetFrames(envelope);
 
-            // 包络的幅度尺度因曲而异，护栏的余量必须相对它来定，所以先取一个标准差当尺度。
-            double average = 0;
-
-            for (int i = 0; i < n; i++)
-                average += envelope[i];
-
-            average /= n;
-
-            double variance = 0;
-
-            for (int i = 0; i < n; i++)
-            {
-                double d = envelope[i] - average;
-                variance += d * d;
-            }
-
-            double deviation = Math.Sqrt(variance / n);
-
-            if (deviation < 1e-9)
+            if (onsets.Count < 32)
                 return (bpm, phaseMs);
 
             // 起音峰 + 邻域：网格点与起音只要落进彼此 ±tol 帧就算命中（帧长约 10ms，±2 帧 ≈ ±22ms）。
             const int tolerance = 2;
             var nearOnset = new bool[n];
-            var onsets = new List<int>();
-
-            for (int i = 1; i < n - 1; i++)
-            {
-                if (envelope[i] < average + 0.5 * deviation)
-                    continue;
-
-                if (envelope[i] >= envelope[i - 1] && envelope[i] > envelope[i + 1])
-                    onsets.Add(i);
-            }
-
-            if (onsets.Count < 32)
-                return (bpm, phaseMs);
 
             foreach (int onset in onsets)
             {
@@ -1371,7 +1389,196 @@ namespace OsuPlayer.Game.Music.BeatSync
             // 相位沿用融合值即可，不需要重新定：所有候选速度都是融合值的整数比，所以融合相位
             // （某个已检出的拍点）对任何候选网格都仍然是合法的网格点 —— 粗网格是细网格的子集。
             // 试过用起音包络重新搜相位，结果反而更差（中位误差 77ms → 100ms），就是没利用这一点。
+            // 也试过「与融合相位相差超过 1/4 拍就吸附到起音直方图峰」（想修用户样本里的半拍错位）：
+            // 302 张上触发 14 次、首拍中位 63 → 65ms，用户 6 首无一改善。原因见 ScorePhase 注释：
+            // 相距半拍的两个网格在音频里常常同样强，起音能量无法判别，只有结构/和声线索才行。
             return (bestBpm, phaseMs);
+        }
+
+        /// <summary>
+        /// 用和声变化判别「差半拍」。相距半拍的两套网格在起音能量上常常打平（用户样本实测
+        /// 包络能量比 0.82~1.24），但和弦只会在真正的拍点上切换：在网格点两侧各取 1/4 拍的
+        /// 色度做余弦对比，真拍网格的前后差异大，半拍错位网格两侧同属一个和弦、差异小。
+        /// 只有「错位网格」的优势超过 8% 才吸附，避免用噪声改判。
+        /// </summary>
+        private static double refinePhaseByHarmony(IReadOnlyList<Frame> frames, double hopRate, double bpm,
+                                                   double phaseMs)
+        {
+            if (frames.Count < 64 || hopRate <= 0 || bpm <= 0)
+                return phaseMs;
+
+            double periodMs = 60000.0 / bpm;
+            double periodFrames = periodMs / 1000.0 * hopRate;
+
+            if (periodFrames < 8)
+                return phaseMs;
+
+            double halfWindow = periodFrames / 4;
+            double current = harmonicChangeAtGrid(frames, phaseMs / 1000.0 * hopRate, halfWindow, periodFrames);
+            double shifted = harmonicChangeAtGrid(frames, (phaseMs + periodMs / 2) / 1000.0 * hopRate,
+                halfWindow, periodFrames);
+
+            // 8% 来自实测：15% 时用户样本里 Human Legacy / 家乡烟火 的优势在 1.08~1.12 之间被漏掉，
+            // 翻正后分别从 395ms / -206ms 降到 -34ms / 32ms；放宽到 8% 后 302 张的首拍中位仍从
+            // 64ms 降到 62ms、小节偏差从 169ms 降到 145ms，没有整体退步。
+            if (shifted <= current * 1.08)
+                return phaseMs;
+
+            AppLog.Beat.Add($"和声半拍对齐：{phaseMs:0}ms → {phaseMs + periodMs / 2:0}ms"
+                            + $"（色度变化 {current:0.0000} → {shifted:0.0000}）");
+
+            return phaseMs + periodMs / 2;
+        }
+
+        /// <summary>
+        /// 某个相位网格上的平均和声变化：每个网格点前后各 <paramref name="halfWindowFrames"/> 帧的
+        /// 归一化色度做余弦对比，1 - cos 即该点处的和声跳变强度。
+        /// </summary>
+        private static double harmonicChangeAtGrid(IReadOnlyList<Frame> frames, double phaseFrames,
+                                                   double halfWindowFrames, double periodFrames)
+        {
+            double first = phaseFrames % periodFrames;
+
+            if (first < 0)
+                first += periodFrames;
+
+            int window = Math.Max(2, (int)Math.Round(halfWindowFrames));
+            double sum = 0;
+            int count = 0;
+
+            for (double centre = first; centre < frames.Count - window; centre += periodFrames)
+            {
+                int position = (int)Math.Round(centre);
+                var before = new double[chroma_bins];
+                var after = new double[chroma_bins];
+
+                for (int i = Math.Max(0, position - window); i < position; i++)
+                {
+                    for (int k = 0; k < chroma_bins; k++)
+                        before[k] += frames[i].GetChroma(k);
+                }
+
+                for (int i = position; i < Math.Min(frames.Count, position + window); i++)
+                {
+                    for (int k = 0; k < chroma_bins; k++)
+                        after[k] += frames[i].GetChroma(k);
+                }
+
+                unitNormalise(before);
+                unitNormalise(after);
+
+                double dot = 0;
+
+                for (int k = 0; k < chroma_bins; k++)
+                    dot += before[k] * after[k];
+
+                sum += 1 - dot;
+                count++;
+            }
+
+            return count > 0 ? sum / count : 0;
+        }
+
+        /// <summary>
+        /// 模型改判 BPM 之后把相位吸附到新网格上。
+        ///
+        /// 只有模型把速度**改慢**（细网格 → 粗网格，如 182 → 91）时才存在歧义：融合相位是原
+        /// 网格上的拍点，折到新周期后有一半概率落在强拍、另一半整差半拍。合法候选恰好只有
+        /// 「原拍长的整数倍」这几个，用起音包络总能量挑最强的一个即可。反向（91 → 182）的
+        /// 融合相位本来就是新网格的合法拍点，保持不动。
+        ///
+        /// 不做「按新周期全网重搜相位」：实测中位首拍误差 63 → 66ms、小节偏差 173 → 191ms。
+        /// </summary>
+        private static double alignPhaseToTempo(IReadOnlyList<Frame> frames, double hopRate,
+                                                double oldBpm, double newBpm, double phaseMs)
+        {
+            if (hopRate <= 0 || oldBpm <= 0 || newBpm <= 0 || newBpm >= oldBpm)
+                return phaseMs;
+
+            double newPeriodMs = 60000.0 / newBpm;
+            double oldPeriodMs = 60000.0 / oldBpm;
+            int copies = (int)Math.Round(newPeriodMs / oldPeriodMs);
+
+            // 只处理整数倍的折半/折三分之一；非整数比的相位关系没有定义，保持原样。
+            // 用 BPM 的相对误差判定（3%），不要用周期毫秒差：模型与融合值都经过整数化，
+            // 172.27 → 87 的「2 倍」在周期上差 8ms，卡住 5ms 阈值会让这条路径永远不触发。
+            if (copies <= 1 || Math.Abs(oldBpm - newBpm * copies) > newBpm * 0.03)
+                return phaseMs;
+
+            double[] envelope = buildOnsetEnvelope(frames);
+            double periodFrames = newPeriodMs / 1000.0 * hopRate;
+            double oldPeriodFrames = oldPeriodMs / 1000.0 * hopRate;
+            double baseFrames = phaseMs / 1000.0 * hopRate;
+
+            double bestPhase = phaseMs;
+            double bestScore = double.MinValue;
+
+            for (int j = 0; j < copies; j++)
+            {
+                double candidate = baseFrames + j * oldPeriodFrames;
+                double score = gridEnergy(envelope, candidate, periodFrames);
+
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestPhase = candidate / hopRate * 1000;
+                }
+            }
+
+            return bestPhase;
+        }
+
+        /// <summary>某个相位网格上的起音包络总能量（越强说明越贴近真实拍点）。</summary>
+        private static double gridEnergy(double[] envelope, double startFrames, double periodFrames)
+        {
+            double sum = 0;
+
+            for (double position = startFrames; position < envelope.Length; position += periodFrames)
+                sum += envelope[Math.Clamp((int)Math.Round(position), 0, envelope.Length - 1)];
+
+            return sum;
+        }
+
+        /// <summary>起音帧：包络高于均值 0.5σ 的局部极大。</summary>
+        private static List<int> findOnsetFrames(double[] envelope)
+        {
+            int n = envelope.Length;
+
+            if (n < 3)
+                return new List<int>();
+
+            double average = 0;
+
+            for (int i = 0; i < n; i++)
+                average += envelope[i];
+
+            average /= n;
+
+            double variance = 0;
+
+            for (int i = 0; i < n; i++)
+            {
+                double d = envelope[i] - average;
+                variance += d * d;
+            }
+
+            double deviation = Math.Sqrt(variance / n);
+
+            if (deviation < 1e-9)
+                return new List<int>();
+
+            var onsets = new List<int>();
+
+            for (int i = 1; i < n - 1; i++)
+            {
+                if (envelope[i] < average + 0.5 * deviation)
+                    continue;
+
+                if (envelope[i] >= envelope[i - 1] && envelope[i] > envelope[i + 1])
+                    onsets.Add(i);
+            }
+
+            return onsets;
         }
 
         /// <summary>

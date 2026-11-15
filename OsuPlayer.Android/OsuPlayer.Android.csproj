@@ -36,7 +36,7 @@
   </PropertyGroup>
 
   <ItemGroup Label="Package References">
-    <PackageReference Include="ppy.osu.Framework.Android" Version="2026.1030.0" />
+    <PackageReference Include="ppy.osu.Framework.Android" Version="2026.1114.0" />
   </ItemGroup>
 
   <ItemGroup Label="Project References">

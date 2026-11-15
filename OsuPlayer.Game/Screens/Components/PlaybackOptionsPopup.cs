@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using osu.Framework.Allocation;
 using osu.Framework.Graphics;
@@ -40,6 +41,13 @@ namespace OsuPlayer.Game.Screens.Components
         private Container? tempoCard;
 
         private SpriteText? tempoValueText;
+
+        /// <summary>倍速预设及对应按钮，用于把当前值高亮出来。</summary>
+        private readonly List<(double Value, UiTextButton Button)> presetButtons = new();
+
+        private static readonly double[] tempo_presets = { 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0 };
+
+        private static readonly Color4 preset_active_colour = new Color4(255, 102, 171, 255);
 
         /// <summary>弹出内容要贴着的锚点（局部坐标，按钮左上角）。</summary>
         private Vector2 anchor;
@@ -165,6 +173,8 @@ namespace OsuPlayer.Game.Screens.Components
                                     },
                                 },
                                 tempoValueText,
+                                buildPresetRow(),
+                                buildPitchShiftToggle(),
                             },
                         },
                     },
@@ -174,6 +184,72 @@ namespace OsuPlayer.Game.Screens.Components
             host.Clear();
             host.Add(tempoCard);
             anchor = ToLocalSpace(screenAnchor);
+        }
+
+        /// <summary>一排倍速预设按钮：点一下直接切到该倍速。</summary>
+        private Drawable buildPresetRow()
+        {
+            presetButtons.Clear();
+
+            var row = new FillFlowContainer
+            {
+                AutoSizeAxes = Axes.Both,
+                Direction = FillDirection.Horizontal,
+                Spacing = new Vector2(4, 0),
+            };
+
+            foreach (double preset in tempo_presets)
+            {
+                double value = preset;
+
+                var button = new UiTextButton($"{value:0.0#}x", () => player.SetTempo(value), 13,
+                    new MarginPadding { Horizontal = 5, Vertical = 4 });
+
+                presetButtons.Add((value, button));
+                row.Add(button);
+            }
+
+            return row;
+        }
+
+        /// <summary>「声音变调」开关，直接绑到播放器的 <see cref="MusicPlayer.PitchShift"/>。</summary>
+        private Drawable buildPitchShiftToggle()
+        {
+            var checkbox = new OsuCheckbox
+            {
+                LabelText = "声音变调",
+            };
+
+            checkbox.Current.BindTo(player.PitchShift);
+
+            return new FillFlowContainer
+            {
+                AutoSizeAxes = Axes.Both,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 2),
+                Children = new Drawable[]
+                {
+                    checkbox,
+                    new SpriteText
+                    {
+                        Font = OsuFont.GetFont(size: 12),
+                        Colour = new Color4(155, 155, 170, 255),
+                        Text = "开启后音高随倍速变化",
+                    },
+                },
+            };
+        }
+
+        /// <summary>把与当前倍速一致的预设标成粉色（滑块拖动时也会跟随）。</summary>
+        private void updatePresetHighlight()
+        {
+            foreach ((double value, UiTextButton button) in presetButtons)
+            {
+                Color4 colour = Math.Abs(player.Tempo.Value - value) < 0.005 ? preset_active_colour : Color4.White;
+
+                if (button.LabelColour != colour)
+                    button.LabelColour = colour;
+            }
         }
 
         public void Close()
@@ -187,6 +263,7 @@ namespace OsuPlayer.Game.Screens.Components
             host.Clear();
             tempoCard = null;
             tempoValueText = null;
+            presetButtons.Clear();
         }
 
         protected override void Update()
@@ -194,7 +271,10 @@ namespace OsuPlayer.Game.Screens.Components
             base.Update();
 
             if (tempoValueText is not null)
+            {
                 tempoValueText.Text = $"{player.Tempo.Value:0.00}x";
+                updatePresetHighlight();
+            }
 
             Drawable? active = activeContent;
 

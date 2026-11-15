@@ -1,4 +1,6 @@
+using osu.Framework;
 using osu.Framework.Allocation;
+using osu.Framework.Audio;
 using osu.Framework.Bindables;
 using osu.Framework.Configuration;
 using Newtonsoft.Json.Linq;
@@ -11,6 +13,7 @@ using osu.Framework.Input.Bindings;
 using osu.Framework.Input.Events;
 using osu.Framework.Localisation;
 using osu.Framework.Logging;
+using osu.Framework.Platform;
 using osu.Framework.Threading;
 using osu.Game.Configuration;
 using osu.Game.Graphics;
@@ -44,6 +47,17 @@ namespace OsuPlayer.Game.Screens.Components
         [Resolved]
         private FrameworkConfigManager frameworkConfig { get; set; } = null!;
 
+        /// <summary>音频管理器：输出设备、主音量与音效音量（与 osu! 的音频设置同一套接口）。</summary>
+        [Resolved]
+        private AudioManager audio { get; set; } = null!;
+
+        /// <summary>
+        /// osu! 本体的配置项。背景暗化、星星喷泉、菜单光标等设置直接复用官方键位与存储，
+        /// 交互语义与 osu! 的设置面板完全一致。
+        /// </summary>
+        [Resolved]
+        private OsuConfigManager config { get; set; } = null!;
+
         private const float panel_width = 400;
 
         /// <summary>Left + right margin of the header/content flow inside the panel.</summary>
@@ -53,12 +67,16 @@ namespace OsuPlayer.Game.Screens.Components
         private const float title_close_reserve = 62;
         private const float title_back_reserve = 66;
 
+        /// <summary>左上角大头针按钮占掉的宽度（28 图标 + 左右各 6 留白），标题整体右移这么多。</summary>
+        private const float pin_reserve = 40;
+
         /// <summary>Title width budget, so long playlist names truncate instead of running under the header buttons.</summary>
-        private const float title_max_width = panel_width - header_padding - title_close_reserve;
+        private const float title_max_width = panel_width - header_padding - title_close_reserve - pin_reserve;
         private const float title_max_width_with_back = title_max_width - title_back_reserve;
 
         private SpriteText titleText = null!;
         private UiTextButton backButton = null!;
+        private DrawerPinButton pinButton = null!;
         private Container contentHost = null!;
         private OsuTextBox searchBox = null!;
 
@@ -138,17 +156,24 @@ namespace OsuPlayer.Game.Screens.Components
                                 AutoSizeAxes = Axes.Y,
                                 Children = new Drawable[]
                                 {
+                                    // 左上角大头针：点亮后点击面板外不关闭。
+                                    pinButton = new DrawerPinButton
+                                    {
+                                        Anchor = Anchor.CentreLeft,
+                                        Origin = Anchor.CentreLeft,
+                                    },
                                     backButton = new UiTextButton("返回", goBack, 18)
                                     {
                                         Anchor = Anchor.CentreLeft,
                                         Origin = Anchor.CentreLeft,
-                                        X = -56,
+                                        X = pin_reserve - 56,
                                         Alpha = 0,
                                     },
                                     titleText = new TruncatingTitle
                                     {
                                         Anchor = Anchor.CentreLeft,
                                         Origin = Anchor.CentreLeft,
+                                        X = pin_reserve,
                                         Font = OsuFont.GetFont(size: 26, weight: FontWeight.Bold),
                                         Text = "搜索",
                                         MaxWidth = title_max_width,
@@ -227,8 +252,8 @@ namespace OsuPlayer.Game.Screens.Components
             backAction = back;
 
             backButton.FadeIn(160);
-            backButton.MoveToX(0, 240, Easing.OutQuint);
-            titleText.MoveToX(60, 240, Easing.OutQuint);
+            backButton.MoveToX(pin_reserve, 240, Easing.OutQuint);
+            titleText.MoveToX(pin_reserve + 60, 240, Easing.OutQuint);
         }
 
         private void clearNavigation(bool animate = true)
@@ -240,14 +265,14 @@ namespace OsuPlayer.Game.Screens.Components
             if (!animate)
             {
                 backButton.Alpha = 0;
-                backButton.X = -56;
-                titleText.X = 0;
+                backButton.X = pin_reserve - 56;
+                titleText.X = pin_reserve;
                 return;
             }
 
             backButton.FadeOut(160);
-            backButton.MoveToX(-56, 240, Easing.OutQuint);
-            titleText.MoveToX(0, 240, Easing.OutQuint);
+            backButton.MoveToX(pin_reserve - 56, 240, Easing.OutQuint);
+            titleText.MoveToX(pin_reserve, 240, Easing.OutQuint);
         }
 
         private void goBack()
@@ -286,6 +311,18 @@ namespace OsuPlayer.Game.Screens.Components
             this.FadeOut(220, Easing.OutQuint)
                 .MoveToX(-panel_width - 10, 280, Easing.OutQuint);
         }
+
+        /// <summary>面板是否处于打开状态（MainScreen 据此决定点击面板外要不要收起）。</summary>
+        public bool IsOpen => Alpha > 0;
+
+        /// <summary>左上角大头针：点亮后点击面板外的部分不会关闭面板。</summary>
+        public bool Pinned => pinButton.Pinned;
+
+        /// <summary>
+        /// 面板本体要吃掉落在自己身上的点击：位置输入是「从最上层往后遍历」的队列，
+        /// 面板不处理时会继续传给下层（即外部的点击层 / 圆饼等），看起来就是空白处穿透。
+        /// </summary>
+        protected override bool OnClick(ClickEvent e) => IsOpen;
 
         private static string titleFor(PanelKind kind) => kind switch
         {
@@ -389,6 +426,8 @@ namespace OsuPlayer.Game.Screens.Components
 
         /// <summary>
         /// 推荐页：进入时只显示上一次的缓存，**不自动请求**；只有点「刷新推荐」才会重新拉取。
+        /// 酷狗单次只回约 8 首，所以一次刷新连续请求 7 批（约 50 首）：每批到达就追加到列表末尾，
+        /// 失败的批次跳过，已上屏的行顺序保持不变。
         /// </summary>
         private void buildRecommend()
         {
@@ -409,33 +448,104 @@ namespace OsuPlayer.Game.Screens.Components
                 Children = new Drawable[] { refreshButton, status },
             };
 
-            IReadOnlyList<SongInfo> songs = player.CachedRecommend ?? Array.Empty<SongInfo>();
+            var flow = new FillFlowContainer<Drawable>
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 6),
+            };
 
-            status.Text = songs.Count > 0
-                ? $"共 {songs.Count} 首 · 仅手动刷新（进入本页不会重新获取）"
+            // shown = 缓存 + 刷新过程中陆续到达的批次；行只往末尾追加，不重排。
+            var shown = new List<SongInfo>(player.CachedRecommend ?? Array.Empty<SongInfo>());
+            currentList = shown;
+
+            contentHost.Clear();
+            flow.Add(header);
+            contentHost.Add(flow);
+
+            int version = contentVersion;
+            int rendered = 0;
+            // 每次刷新自增；旧的逐帧追加任务发现 token 变了就停手，避免往新列表里掺旧行。
+            int appendToken = 0;
+
+            status.Text = shown.Count > 0
+                ? $"共 {shown.Count} 首 · 仅手动刷新（进入本页不会重新获取）"
                 : "尚未加载，点「刷新推荐」获取。";
 
-            showSongs(songs, header);
+            appendPending();
 
             refreshButton.Action = () => _ = refreshAsync();
+
+            // 逐帧把还没上屏的行追加到末尾：刷新分多批到达，任何时候界面都保持可交互。
+            void appendPending()
+            {
+                int token = appendToken;
+                int end = Math.Min(rendered + 12, shown.Count);
+
+                for (; rendered < end; rendered++)
+                {
+                    int index = rendered;
+                    flow.Add(new SongRow(player, shown[index])
+                    {
+                        Action = () => _ = player.PlayAtAsync(shown, index),
+                    });
+                }
+
+                if (rendered < shown.Count)
+                {
+                    Scheduler.AddDelayed(() =>
+                    {
+                        if (token == appendToken && version == contentVersion)
+                            appendPending();
+                    }, 0);
+                }
+            }
 
             async Task refreshAsync()
             {
                 refreshButton.Enabled.Value = false;
-                status.Text = "正在刷新…";
+                status.Text = "正在刷新…（每批约 8 首，共 7 批）";
+
+                // 新的一轮刷新：移除旧行（保留表头），新结果按到达顺序重新从末尾追加。
+                flow.RemoveAll(d => d != header, true);
+                shown.Clear();
+                rendered = 0;
+                appendToken++;
 
                 try
                 {
-                    IReadOnlyList<SongInfo> fresh = await player.GetRecommendAsync();
-                    AppLog.Ui.Add($"推荐刷新：{fresh.Count} 首", LogLevel.Important);
+                    IReadOnlyList<SongInfo> result = await player.RefreshRecommendAsync(onBatch: batch =>
+                    {
+                        if (version != contentVersion)
+                            return;
 
-                    if (currentKind == PanelKind.Recommend)
-                        buildRecommend();
+                        // 每批到达只做「追加」：先同步 shown，再由 appendPending 往 flow 末尾加行。
+                        shown.Clear();
+                        shown.AddRange(batch);
+                        status.Text = $"已获取 {shown.Count} 首…";
+                        appendPending();
+                    });
+
+                    if (version != contentVersion)
+                        return;
+
+                    status.Text = result.Count > 0
+                        ? $"共 {result.Count} 首 · 仅手动刷新（进入本页不会重新获取）"
+                        : "刷新失败：本次全部请求均未成功，点「刷新推荐」重试。";
+
+                    AppLog.Ui.Add($"推荐刷新：{result.Count} 首", LogLevel.Important);
+                    player.PrewarmList(result);
                 }
                 catch (Exception e)
                 {
                     AppLog.Ui.Add($"推荐刷新失败：{e.Message}", LogLevel.Error, e);
-                    status.Text = $"刷新失败：{e.Message}";
+
+                    if (version == contentVersion)
+                        status.Text = $"刷新失败：{e.Message}";
+                }
+                finally
+                {
                     refreshButton.Enabled.Value = true;
                 }
             }
@@ -444,13 +554,10 @@ namespace OsuPlayer.Game.Screens.Components
         // -------- 设置 --------
 
         /// <summary>
-        /// 设置页。目前只有「BPM 检测模式」一项：
-        /// <list type="bullet">
-        /// <item>原生：纯 C# 频谱分析（多频带谱通量 + 梳状滤波 + Ellis DP），零依赖、离线可用。</item>
-        /// <item>ONNX：跑 Beat This!（JKU，ISMIR 2024，MIT）节拍模型。它与频谱通量完全独立，
-        /// 因此能提供一份真正的第二意见；代价是 120MB 模型和更长的分析时间。</item>
-        /// </list>
-        /// 模型不进安装包，所以这里同时负责它的下载与状态显示。
+        /// 设置页。分组沿用 osu! 官方设置的分区顺序（音频 / 图形 / 界面），
+        /// 后面再接本应用特有的「节拍分析」与「调试」。
+        /// 其中音频音量、输出设备、帧率与线程、光标、背景暗化、星星喷泉都直接绑定
+        /// osu!/框架的配置键，与官方设置项同名同义、共用同一份存储。
         /// </summary>
         private void buildSettings()
         {
@@ -523,78 +630,194 @@ namespace OsuPlayer.Game.Screens.Components
                 });
             };
 
+            var children = new List<Drawable>();
+
+            // -------- 音频（osu! 音频分区） --------
+            children.Add(sectionHeader("音频"));
+
+            var deviceItems = new List<string> { string.Empty };
+            deviceItems.AddRange(audio.AudioDeviceNames);
+
+            // 当前选中的设备可能已经拔掉、不在枚举里：补进去，否则下拉框显示不出当前值。
+            string preferredDevice = audio.AudioDevice.Value;
+            if (deviceItems.All(d => d != preferredDevice))
+                deviceItems.Add(preferredDevice);
+
+            children.Add(new AudioDeviceDropdown
+            {
+                Caption = "输出设备",
+                Items = deviceItems.Where(d => d is not null).Distinct().ToList(),
+                Current = audio.AudioDevice,
+            });
+
+            // 音乐音量与底栏共用同一个 bindable：任何一处调整，另一处立即同步。
+            var musicVolume = player.Volume.GetBoundCopy();
+            musicVolume.MinValue = 0;
+            musicVolume.MaxValue = 1;
+
+            children.Add(new FormSliderBar<double>
+            {
+                Caption = "主音量",
+                HintText = "音乐与界面音效的总音量",
+                Current = audio.Volume,
+                KeyboardStep = 0.01f,
+                DisplayAsPercentage = true,
+            });
+            children.Add(new FormSliderBar<float>
+            {
+                Caption = "音乐音量",
+                HintText = "音乐播放的音量，与底栏的音量按钮同步",
+                Current = musicVolume,
+                KeyboardStep = 0.01f,
+                DisplayAsPercentage = true,
+            });
+            children.Add(new FormSliderBar<double>
+            {
+                Caption = "音效音量",
+                HintText = "界面点击、星星喷泉等音效的音量，不影响音乐",
+                Current = audio.VolumeSample,
+                KeyboardStep = 0.01f,
+                DisplayAsPercentage = true,
+            });
+
+            // -------- 图形（osu! 图形分区） --------
+            children.Add(sectionHeader("图形"));
+
+            if (RuntimeInfo.IsDesktop)
+            {
+                children.Add(new WindowModeDropdown
+                {
+                    Caption = "窗口模式",
+                    Current = frameworkConfig.GetBindable<WindowMode>(FrameworkSetting.WindowMode),
+                });
+            }
+
+            children.Add(new FrameLimiterDropdown
+            {
+                Caption = "帧率上限",
+                HintText = "限制渲染帧率：越高越流畅也越耗电，垂直同步可避免画面撕裂",
+                Current = frameworkConfig.GetBindable<FrameSync>(FrameworkSetting.FrameSync),
+            });
+
+            if (RuntimeInfo.IsDesktop)
+            {
+                children.Add(new ThreadingModeDropdown
+                {
+                    Caption = "线程模式",
+                    HintText = "多线程把输入 / 更新 / 音频 / 绘制分到不同线程，通常更流畅；切换后部分设置需重启生效",
+                    Current = frameworkConfig.GetBindable<ExecutionMode>(FrameworkSetting.ExecutionMode),
+                });
+                children.Add(new FormCheckBox
+                {
+                    Caption = "全屏时失去焦点自动最小化",
+                    Current = frameworkConfig.GetBindable<bool>(FrameworkSetting.MinimiseOnFocusLossInFullscreen),
+                });
+            }
+
+            children.Add(new FormCheckBox
+            {
+                Caption = "显示帧率",
+                HintText = "在窗口右下角显示 osu! 的帧率与帧时间计数器",
+                Current = player.ShowFps,
+            });
+            children.Add(new FormSliderBar<double>
+            {
+                Caption = "背景暗化",
+                HintText = "主界面封面背景的压暗程度（osu! 的 DimLevel 配置项）",
+                Current = config.GetBindable<double>(OsuSetting.DimLevel),
+                KeyboardStep = 0.01f,
+                DisplayAsPercentage = true,
+            });
+            children.Add(new FormCheckBox
+            {
+                Caption = "星星喷泉",
+                HintText = "kiai 段落在屏幕底部两侧喷出的星星（osu! 主菜单同款特效）",
+                Current = config.GetBindable<bool>(OsuSetting.StarFountains),
+            });
+            children.Add(new CoverRotationDropdown
+            {
+                Caption = "封面旋转方式",
+                HintText = "跟随歌词：歌词滚动多少角度，封面就转多少角度；匀速：封面按固定周期匀速自转",
+                Current = player.CoverRotation,
+            });
+
+            if (RuntimeInfo.IsDesktop)
+            {
+                children.Add(new FormCheckBox
+                {
+                    Caption = "全屏特效",
+                    HintText = "播放器最小化时在桌面上铺开两侧闪光与 kiai 星星喷泉。关闭后不再显示特效，但特效进程会保留（托盘图标与顶层效果窗口仍在）",
+                    Current = player.FullscreenEffects,
+                });
+            }
+
+            // -------- 界面（osu! 界面分区） --------
+            children.Add(sectionHeader("界面"));
+
+            children.Add(new FormCheckBox
+            {
+                Caption = "光标旋转",
+                HintText = "拖动菜单光标时，光标跟着移动方向旋转",
+                Current = config.GetBindable<bool>(OsuSetting.CursorRotation),
+            });
+            children.Add(new FormSliderBar<float>
+            {
+                Caption = "菜单光标大小",
+                Current = config.GetBindable<float>(OsuSetting.MenuCursorSize),
+                KeyboardStep = 0.01f,
+                LabelFormat = v => $"{v:0.##}x",
+            });
+
+            // -------- 节拍分析（应用特有） --------
+            children.Add(sectionHeader("节拍分析"));
+
+            children.Add(new BpmModeDropdown
+            {
+                Caption = "BPM 检测模式",
+                Current = player.BpmMode,
+            });
+            children.Add(hint);
+            children.Add(statusText);
+            children.Add(downloadButton);
+            children.Add(subsectionHeader("高潮检测模型"));
+            children.Add(kiaiStatusText);
+            children.Add(subsectionHeader("BPM 层级模型"));
+            children.Add(bpmStatusText);
+
+            // -------- 调试（应用特有） --------
+            children.Add(sectionHeader("调试"));
+
+            children.Add(new FormCheckBox
+            {
+                Caption = "调试模式",
+                Current = player.DebugMode,
+            });
+            children.Add(debugHint);
+
             contentHost.Add(new FillFlowContainer
             {
                 RelativeSizeAxes = Axes.X,
                 AutoSizeAxes = Axes.Y,
                 Direction = FillDirection.Vertical,
                 Spacing = new Vector2(0, 10),
-                Children = new Drawable[]
-                {
-                    new BpmModeDropdown
-                    {
-                        Caption = "BPM 检测模式",
-                        Margin = new MarginPadding { Top = 4 },
-                        Current = player.BpmMode,
-                    },
-                    hint,
-                    statusText,
-                    downloadButton,
-                    new SpriteText
-                    {
-                        Text = "高潮检测模型",
-                        Font = OsuFont.GetFont(size: 20, weight: FontWeight.Bold),
-                        Margin = new MarginPadding { Top = 8 },
-                    },
-                    kiaiStatusText,
-                    new SpriteText
-                    {
-                        Text = "BPM 层级模型",
-                        Font = OsuFont.GetFont(size: 20, weight: FontWeight.Bold),
-                        Margin = new MarginPadding { Top = 8 },
-                    },
-                    bpmStatusText,
-                    new FormCheckBox
-                    {
-                        Caption = "调试模式",
-                        Margin = new MarginPadding { Top = 8 },
-                        Current = player.DebugMode,
-                    },
-                    debugHint,
-                    new SpriteText
-                    {
-                        Text = "图形",
-                        Font = OsuFont.GetFont(size: 20, weight: FontWeight.Bold),
-                        Margin = new MarginPadding { Top = 8 },
-                    },
-                    new CoverRotationDropdown
-                    {
-                        Caption = "封面旋转方式",
-                        HintText = "跟随歌词：歌词滚动多少角度，封面就转多少角度；匀速：封面按固定周期匀速自转",
-                        Current = player.CoverRotation,
-                    },
-                    new FrameLimiterDropdown
-                    {
-                        Caption = "帧率上限",
-                        HintText = "限制渲染帧率：越高越流畅也越耗电，垂直同步可避免画面撕裂",
-                        Current = frameworkConfig.GetBindable<FrameSync>(FrameworkSetting.FrameSync),
-                    },
-                    new FormCheckBox
-                    {
-                        Caption = "显示帧率",
-                        HintText = "在窗口右下角显示 osu! 的帧率与帧时间计数器",
-                        Current = player.ShowFps,
-                    },
-                    new FormCheckBox
-                    {
-                        Caption = "全屏特效",
-                        HintText = "播放器最小化时在桌面上铺开两侧闪光与 kiai 星星喷泉。关闭后不再显示特效，但特效进程会保留（托盘图标与顶层效果窗口仍在）",
-                        Current = player.FullscreenEffects,
-                    },
-                },
+                Children = children,
             });
 
             refresh();
+
+            static Drawable sectionHeader(string text) => new SpriteText
+            {
+                Text = text,
+                Font = OsuFont.GetFont(size: 22, weight: FontWeight.Bold),
+                Margin = new MarginPadding { Top = 8 },
+            };
+
+            static Drawable subsectionHeader(string text) => new SpriteText
+            {
+                Text = text,
+                Font = OsuFont.GetFont(size: 18, weight: FontWeight.Bold),
+                Margin = new MarginPadding { Top = 6 },
+            };
 
             void refresh()
             {
@@ -1464,18 +1687,22 @@ namespace OsuPlayer.Game.Screens.Components
                     Colour = Color4.LightGray,
                 };
 
-                var changTingText = new SpriteText
+                // 会员权益行：按接口实际开通的档位动态生成（超级VIP / 豪华VIP / 概念会员 / 畅听会员）。
+                var vipFlow = new FillFlowContainer
                 {
-                    Text = "畅听会员：查询中…",
-                    Font = OsuFont.GetFont(size: 18),
-                    Colour = Color4.LightGray,
-                };
-
-                var conceptText = new SpriteText
-                {
-                    Text = "概念会员：查询中…",
-                    Font = OsuFont.GetFont(size: 18),
-                    Colour = Color4.LightGray,
+                    RelativeSizeAxes = Axes.X,
+                    AutoSizeAxes = Axes.Y,
+                    Direction = FillDirection.Vertical,
+                    Spacing = new Vector2(0, 6),
+                    Children = new Drawable[]
+                    {
+                        new SpriteText
+                        {
+                            Text = "会员：查询中…",
+                            Font = OsuFont.GetFont(size: 18),
+                            Colour = Color4.LightGray,
+                        },
+                    },
                 };
 
                 var messageText = new SpriteText
@@ -1525,8 +1752,7 @@ namespace OsuPlayer.Game.Screens.Components
                         ageText,
                         genderText,
                         birthdayText,
-                        changTingText,
-                        conceptText,
+                        vipFlow,
                         new FillFlowContainer
                         {
                             AutoSizeAxes = Axes.Both,
@@ -1583,8 +1809,17 @@ namespace OsuPlayer.Game.Screens.Components
                     MusicPlayer.AccountVip vip = await player.GetVipExpiriesAsync();
                     Scheduler.Add(() =>
                     {
-                        changTingText.Text = $"畅听会员：{vip.ChangTingExpiry}";
-                        conceptText.Text = $"概念会员：{vip.ConceptExpiry}";
+                        vipFlow.Clear();
+
+                        foreach (MusicPlayer.VipMembership entry in vip.Memberships)
+                        {
+                            vipFlow.Add(new SpriteText
+                            {
+                                Text = $"{entry.Label}：{entry.Expiry}",
+                                Font = OsuFont.GetFont(size: 18),
+                                Colour = Color4.LightGray,
+                            });
+                        }
                     });
                 }
 
@@ -2503,6 +2738,36 @@ namespace OsuPlayer.Game.Screens.Components
                 "Unlimited" => "不限制",
                 _ => base.GenerateItemText(item),
             };
+        }
+
+        /// <summary>窗口模式下拉框，对应框架的 <see cref="FrameworkSetting.WindowMode"/>。</summary>
+        private partial class WindowModeDropdown : FormEnumDropdown<WindowMode>
+        {
+            protected override LocalisableString GenerateItemText(WindowMode item) => item switch
+            {
+                WindowMode.Windowed => "窗口化",
+                WindowMode.Borderless => "无边框全屏",
+                WindowMode.Fullscreen => "独占全屏",
+                _ => base.GenerateItemText(item),
+            };
+        }
+
+        /// <summary>线程模式下拉框，对应框架的 <see cref="FrameworkSetting.ExecutionMode"/>。</summary>
+        private partial class ThreadingModeDropdown : FormEnumDropdown<ExecutionMode>
+        {
+            protected override LocalisableString GenerateItemText(ExecutionMode item) => item switch
+            {
+                ExecutionMode.SingleThread => "单线程",
+                ExecutionMode.MultiThreaded => "多线程",
+                _ => base.GenerateItemText(item),
+            };
+        }
+
+        /// <summary>输出设备下拉框：空字符串代表系统默认设备（与 osu! 的音频设备设置一致）。</summary>
+        private partial class AudioDeviceDropdown : FormDropdown<string>
+        {
+            protected override LocalisableString GenerateItemText(string item)
+                => string.IsNullOrEmpty(item) ? "默认设备" : base.GenerateItemText(item);
         }
     }
 }

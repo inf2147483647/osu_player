@@ -396,6 +396,25 @@ namespace OsuPlayer.Game.Music.BeatSync
                                    + (statusSuffix is null ? string.Empty : $"　{statusSuffix}");
             AppLog.Beat.Add($"节拍结果已应用到特效（{source}）：BPM {result.Bpm:0}，首拍 {analysed.FirstBeatMs:0.#}ms，"
                             + $"高潮段 {result.KiaiSections.Count} 个");
+            logTiming(analysed, source);
+        }
+
+        /// <summary>
+        /// 把最终生效的时间轴逐条写进日志（红线：offset/beatLength/BPM/拍号；绿线：kiai 开关），
+        /// 便于事后按 osu! [TimingPoints] 口径复查模型算出的 timing。
+        /// </summary>
+        private static void logTiming(BeatmapTiming timing, string source)
+        {
+            var parts = new List<string>();
+
+            foreach (BeatTimingLine line in timing.Lines.OrderBy(l => l.TimeMs))
+            {
+                parts.Add(line.Uninherited
+                    ? $"红线 {line.TimeMs:0.#}ms beatLength {line.BeatLengthMs:0.###}ms BPM {BeatmapTiming.BpmOf(line):0.##} {line.Meter}/4"
+                    : $"绿线 {line.TimeMs:0.#}ms kiai={(line.Kiai ? "开" : "关")}");
+            }
+
+            AppLog.Beat.Add($"timing 数据（{source}）：" + string.Join("；", parts));
         }
 
         /// <summary>

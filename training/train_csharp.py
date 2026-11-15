@@ -102,10 +102,21 @@ def load_features(path: str):
 
 
 def main() -> int:
+    global DOUBLING_PROBABILITY_MIN, DOUBLING_GAP_MAX
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--features", default=FEATURES)
     parser.add_argument("--out", default=OUT)
     parser.add_argument("--install", action="store_true")
+    parser.add_argument("--user-ids-from", default="",
+                        help="从另一份特征 CSV 读 song_id，作为用户手改样本")
+    parser.add_argument("--user-weight", type=int, default=1,
+                        help="用户手改样本重复次数（等价样本权重）。用户歌少且以慢歌为主，"
+                             "权重太低会被谱面库的 150-220 BPM 先验淹没；太高又会把快歌误降一半。")
+    parser.add_argument("--doubling-min", type=float, default=DOUBLING_PROBABILITY_MIN,
+                        help="倍频候选的最低概率（写入 config，C# 运行时同值）")
+    parser.add_argument("--doubling-gap", type=float, default=DOUBLING_GAP_MAX,
+                        help="最佳候选与倍频候选的最大概率差（写入 config，C# 运行时同值）")
     args = parser.parse_args()
 
     if not os.path.exists(args.features):
@@ -117,6 +128,9 @@ def main() -> int:
     print(f"C# 原生特征：{len(songs)} 首 / {feature_count} 维 / "
           f"{sum(len(s['labels']) for s in songs)} 条候选")
 
+    DOUBLING_PROBABILITY_MIN = args.doubling_min
+    DOUBLING_GAP_MAX = args.doubling_gap
+
     if feature_count != base.bc.CANDIDATE_FEATURE_COUNT:
         print(f"特征维度不符：CSV {feature_count}，契约 {base.bc.CANDIDATE_FEATURE_COUNT}")
         return 2
@@ -125,10 +139,26 @@ def main() -> int:
         print("可用歌曲太少，无法训练。")
         return 2
 
+    boost_ids: set[str] = set()
+
+    if args.user_ids_from and os.path.exists(args.user_ids_from):
+        with open(args.user_ids_from, "r", encoding="utf-8", newline="") as f:
+            boost_reader = csv.DictReader([line for line in f if not line.startswith("#")])
+
+            for row in boost_reader:
+                boost_ids.add(row["song_id"])
+
     n_splits = min(5, len(songs))
-    base_groups = np.concatenate([np.full(len(s["labels"]), i) for i, s in enumerate(songs)])
-    base_x = np.vstack([s["features"] for s in songs])
-    base_y = np.concatenate([s["labels"] for s in songs])
+    weights = [max(1, args.user_weight) if s["name"] in boost_ids else 1 for s in songs]
+    base_groups = np.concatenate([np.full(len(s["labels"]) * w, i)
+                                  for i, (s, w) in enumerate(zip(songs, weights))])
+    base_x = np.vstack([np.repeat(s["features"], w, axis=0) for s, w in zip(songs, weights)])
+    base_y = np.concatenate([np.repeat(s["labels"], w) for s, w in zip(songs, weights)])
+
+    boosted = sum(weights) - len(weights)
+
+    if boosted:
+        print(f"用户样本加权：{len(boost_ids)} 首 × {args.user_weight}（额外 {boosted} 首样本）")
 
     predictions: dict[str, dict[str, float]] = {name: {} for name in base.make_models()}
     scores: dict[str, tuple[float, float]] = {}
@@ -178,6 +208,7 @@ def main() -> int:
 
     config.update({
         "feature_source": "csharp-native",
+        "feature_count": feature_count,
         "source_features": os.path.abspath(args.features),
         "user_songs": len(songs),
         "doubling_probability_min": DOUBLING_PROBABILITY_MIN,

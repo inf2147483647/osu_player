@@ -193,6 +193,12 @@ CANDIDATE_FEATURE_NAMES = (
     "peak_rank",            # 候选在按显著度排序的候选表中的名次（0 最好）
     "local_contrast",       # self / 邻域均值，峰越尖越大
     "prominence",           # self 在全曲最大中的占比（与 salience_self 同口径，便于模型做线性组合）
+    # 以下 4 维由 C# 的 BpmFeatureBuilder 从低频/色度计算（区分真慢歌与被抬高一倍），
+    # Python 侧的旧音频管线不产出它们，训练 C# 特征时以 CSV 为准。
+    "low_salience_self",    # 低频（20-200Hz）显著度 / 全曲最大
+    "low_ratio_double",     # log2(低频@候选 / 低频@2×)
+    "chroma_ratio_double",  # log2(色度变化@候选拍长 / @两倍拍长)
+    "chroma_ratio_half",    # log2(色度变化@候选拍长 / @半拍长)
 )
 CANDIDATE_FEATURE_COUNT = len(CANDIDATE_FEATURE_NAMES)
 
@@ -303,6 +309,8 @@ def candidate_features(salience, candidates):
             float(rank),
             self_s / local_mean if local_mean > 1e-12 else 1.0,
             self_s / s_max,
+            # 低频/色度 4 维只有 C# 端能算，旧音频路径填 0 保持维度契约一致。
+            0.0, 0.0, 0.0, 0.0,
         ])
 
     return np.asarray(rows, dtype=np.float64)

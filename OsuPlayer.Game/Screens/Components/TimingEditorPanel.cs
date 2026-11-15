@@ -65,6 +65,14 @@ namespace OsuPlayer.Game.Screens.Components
         private readonly OsuCheckbox? timingCardCheckbox;
         private readonly TimingAdjustmentControl offsetControl;
         private readonly TimingAdjustmentControl bpmControl;
+
+        /// <summary>
+        /// BPM 下方的一小块提示：倍速不为 1 时显示「实际 BPM ×倍数」，下面再小字标注变速前的原始 BPM。
+        /// </summary>
+        private readonly FillFlowContainer tempoBpmInfo;
+        private readonly SpriteText tempoBpmText;
+        private readonly SpriteText tempoBpmBadge;
+        private readonly SpriteText tempoBpmOriginal;
         private readonly TapTimingButton tapButton;
         private readonly LabelledTimeSignature timeSignature;
         private readonly FormCheckBox kiaiCheck;
@@ -72,6 +80,14 @@ namespace OsuPlayer.Game.Screens.Components
 
         private readonly SpriteText subtitle;
         private readonly Container headerBar;
+
+        /// <summary>右上角大头针：点亮后点击面板外不关闭。</summary>
+        private readonly DrawerPinButton pinButton = new DrawerPinButton
+        {
+            Anchor = Anchor.CentreRight,
+            Origin = Anchor.CentreRight,
+            Margin = new MarginPadding { Right = 64 },
+        };
 
         private List<BeatTimingLine> lines = [];
         private int selectedIndex;
@@ -81,6 +97,12 @@ namespace OsuPlayer.Game.Screens.Components
 
         /// <summary>Hash of the song the rows were built from; edits after a switch are refused.</summary>
         private string openedForHash = string.Empty;
+
+        /// <summary>面板是否处于打开状态（MainScreen 据此决定点击面板外要不要收起）。</summary>
+        public bool IsOpen => State.Value == Visibility.Visible;
+
+        /// <summary>右上角大头针：点亮后点击面板外的部分不会关闭面板。</summary>
+        public bool Pinned => pinButton.Pinned;
 
         public TimingEditorPanel()
         {
@@ -106,6 +128,46 @@ namespace OsuPlayer.Game.Screens.Components
                 Caption = "BPM",
             };
             bpmControl.ValueChanged += _ => applyBpm();
+
+            tempoBpmInfo = new FillFlowContainer
+            {
+                RelativeSizeAxes = Axes.X,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 2),
+                Alpha = 0,
+                AutoSizeAxes = Axes.Y,
+                Children = new Drawable[]
+                {
+                    new FillFlowContainer
+                    {
+                        AutoSizeAxes = Axes.Both,
+                        Direction = FillDirection.Horizontal,
+                        Spacing = new Vector2(6, 0),
+                        Children = new Drawable[]
+                        {
+                            tempoBpmText = new SpriteText
+                            {
+                                Anchor = Anchor.CentreLeft,
+                                Font = OsuFont.GetFont(size: 17, weight: FontWeight.SemiBold),
+                                Text = string.Empty,
+                            },
+                            tempoBpmBadge = new SpriteText
+                            {
+                                Anchor = Anchor.CentreLeft,
+                                Font = OsuFont.GetFont(size: 13),
+                                Colour = new Color4(140, 140, 155, 255),
+                                Text = string.Empty,
+                            },
+                        },
+                    },
+                    tempoBpmOriginal = new SpriteText
+                    {
+                        Font = OsuFont.GetFont(size: 13),
+                        Colour = new Color4(140, 140, 155, 255),
+                        Text = string.Empty,
+                    },
+                },
+            };
 
             tapButton = new TapTimingButton
             {
@@ -307,6 +369,7 @@ namespace OsuPlayer.Game.Screens.Components
                                 }.With(t => t.AddText("增大 offset 以抵消节拍器提前，减小 offset 以抵消节拍器滞后",
                                     c => c.Colour = Color4.Gray)),
                                 bpmControl,
+                                tempoBpmInfo,
                                 new GridContainer
                                 {
                                     RelativeSizeAxes = Axes.X,
@@ -388,6 +451,8 @@ namespace OsuPlayer.Game.Screens.Components
                             Font = OsuFont.GetFont(size: 22, weight: FontWeight.Bold),
                             Text = "Timing 编辑",
                         },
+                        // 右上角大头针：点亮后点击面板外不关闭。
+                        pinButton,
                         new UiTextButton("关闭", Hide, 18)
                         {
                             Anchor = Anchor.CentreRight,
@@ -404,6 +469,43 @@ namespace OsuPlayer.Game.Screens.Components
             // osu! 的 MetronomeDisplay 自带 click 样本，但默认静音（EnableClicking=false）。
             // 这里跟随分屏可见性开声：隐藏时它仍在更新，若不关掉会在面板外一直听到节拍声。
             State.BindValueChanged(v => metronome.EnableClicking = v.NewValue == Visibility.Visible, true);
+        }
+
+        protected override void LoadComplete()
+        {
+            base.LoadComplete();
+
+            // 倍速变化、或选中行/编辑改变基准 BPM 时，刷新「实际 BPM」提示。
+            player.Tempo.BindValueChanged(_ => updateTempoBpm());
+            bpmControl.Current.BindValueChanged(_ => updateTempoBpm(), true);
+        }
+
+        /// <summary>
+        /// 倍速不为 1 时，在 BPM 控件下方给出「实际 BPM ×倍数」与变速前的原始 BPM。
+        /// 控件里可编辑的仍然是原始 BPM（否则输入会写错值），这里只是提示实际听感对应的 BPM。
+        /// </summary>
+        private void updateTempoBpm()
+        {
+            double bpm = bpmControl.Current.Value;
+            double tempo = player.Tempo.Value;
+
+            bool show = !bpmControl.Current.Disabled && bpm > 0 && Math.Abs(tempo - 1) > 0.001;
+
+            tempoBpmInfo.Alpha = show ? 1 : 0;
+
+            if (!show)
+            {
+                // 收起时真正把高度归零，否则会在 BPM 和时间签名之间留下一条空白。
+                tempoBpmInfo.AutoSizeAxes = Axes.None;
+                tempoBpmInfo.Height = 0;
+                return;
+            }
+
+            tempoBpmText.Text = $"实际 BPM {bpm * tempo:0.##}";
+            tempoBpmBadge.Text = $"×{tempo:0.00}";
+            tempoBpmOriginal.Text = $"原始 BPM {bpm:0.##}";
+
+            tempoBpmInfo.AutoSizeAxes = Axes.Y;
         }
 
         /// <summary>Small pink caption with a hairline divider, used to break the editor into sections.</summary>

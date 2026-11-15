@@ -47,6 +47,7 @@ namespace OsuPlayer.Game.Music.BeatSync.Onnx
 
                 config.FftN = root.Value<int?>("fft_n") ?? config.FftN;
                 config.Hop = root.Value<int?>("hop") ?? config.Hop;
+                config.FeatureCount = root.Value<int?>("feature_count") ?? config.FeatureCount;
                 config.OverrideMargin = root.Value<double?>("override_margin") ?? config.OverrideMargin;
                 config.DoublingProbabilityMin = root.Value<double?>("doubling_probability_min") ?? config.DoublingProbabilityMin;
                 config.DoublingGapMax = root.Value<double?>("doubling_gap_max") ?? config.DoublingGapMax;
@@ -67,6 +68,9 @@ namespace OsuPlayer.Game.Music.BeatSync.Onnx
         public int FftN = BpmFeatureBuilder.FftN;
         public int Hop = BpmFeatureBuilder.Hop;
 
+        /// <summary>训练时的特征维度；缺省 0 表示旧模型，和当前管线不兼容。</summary>
+        public int FeatureCount;
+
         /// <summary>保守覆盖阈值：模型概率相对「显著度最强候选」的领先不足此值时，保留后者。</summary>
         public double OverrideMargin = 0.1;
 
@@ -82,6 +86,7 @@ namespace OsuPlayer.Game.Music.BeatSync.Onnx
         public string Model = "unknown";
 
         /// <summary>特征管线与模型必须同口径，否则拒绝使用模型而不是给出错误结果。</summary>
-        public bool MatchesBuilder => FftN == BpmFeatureBuilder.FftN && Hop == BpmFeatureBuilder.Hop;
+        public bool MatchesBuilder => FftN == BpmFeatureBuilder.FftN && Hop == BpmFeatureBuilder.Hop
+                                      && FeatureCount == BpmFeatureBuilder.FeatureCount;
     }
 }

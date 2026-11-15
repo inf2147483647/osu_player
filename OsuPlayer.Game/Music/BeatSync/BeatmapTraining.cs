@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿using System.Globalization;
+﻿﻿﻿﻿﻿﻿﻿﻿using System.Globalization;
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
@@ -371,11 +371,21 @@ namespace OsuPlayer.Game.Music.BeatSync
         /// true 时用 Beat This! 的 ONNX 结果覆盖「测速 + 拍点相位」（kiai 仍来自原生管线），
         /// 这样两种检测模式可以在同一个评测台上直接对比。
         /// </param>
+        /// <param name="parallelism">
+        /// 并发分析的谱面数（命令行 <c>--train-threads</c>）。默认 1 = 串行：BASS 解码流是全局资源，
+        /// 而 <c>BpmFeatureBuilder.OnsetEnvelope</c> 内部已经用了 Parallel.For，外层再并行会超订，
+        /// 并与全局 BASS 状态竞争（实测曾在 2 核机器上跑到 82 张后 Bass.CreateStream 返回 error Init）。
+        /// 核数足够的机器可以显式调高换取吞吐，报告会记录实际线程数。
+        /// </param>
         /// <param name="ct">取消令牌。</param>
-        public static async Task<string> RunAsync(string directory, string reportPath, bool useOnnx = false, CancellationToken ct = default)
+        public static async Task<string> RunAsync(string directory, string reportPath, bool useOnnx = false,
+                                                 int parallelism = 1, CancellationToken ct = default)
         {
             string[] maps = Directory.GetFiles(directory, "*.osz");
             Array.Sort(maps, StringComparer.OrdinalIgnoreCase);
+
+            parallelism = Math.Max(1, parallelism);
+            var totalWatch = System.Diagnostics.Stopwatch.StartNew();
 
             var sb = new StringBuilder();
             sb.AppendLine($"# 自动 BPM / kiai 训练报告");
@@ -385,13 +395,8 @@ namespace OsuPlayer.Game.Music.BeatSync
             // 报告混着比（踩过：仓库里那份 302 报告就因此对不上当前配置）。
             sb.AppendLine($"# BPM 层级模型：{(Onnx.BpmMl.IsAvailable ? "已启用" : "未安装（用原生 BPM）")}");
             sb.AppendLine($"# 谱面数量：{maps.Length}");
+            sb.AppendLine($"# 训练线程数：{parallelism}");
             sb.AppendLine();
-
-            // 批量评测**串行**执行。原先是 ProcessorCount/2 并行，但 BASS 的解码流是全局资源，
-            // 而 BpmFeatureBuilder.OnsetEnvelope 内部已经用了 Parallel.For —— 外层再并行会在 2 物理核上
-            // 超订，并与全局 BASS 状态竞争：实测 100 张跑到 82 张时 Bass.CreateStream 开始返回
-            // error Init，剩下的一路失败、整批白跑。串行慢一些，但稳定且结果可信。
-            const int parallelism = 1;
 
             var lines = new string[maps.Length];
             var collected = new MapResult?[maps.Length];
@@ -407,6 +412,7 @@ namespace OsuPlayer.Game.Music.BeatSync
                 {
                     string map = maps[index];
                     string name = Path.GetFileNameWithoutExtension(map);
+                    var watch = System.Diagnostics.Stopwatch.StartNew();
 
                     try
                     {
@@ -430,11 +436,11 @@ namespace OsuPlayer.Game.Music.BeatSync
                         MapResult result = compare(truth, detected, details.Duration);
 
                         collected[index] = result;
-                        lines[index] = format(result);
+                        lines[index] = format(result) + $"\t耗时 {watch.ElapsedMilliseconds}ms";
                     }
                     catch (Exception e)
                     {
-                        lines[index] = $"{name}\t失败：{e.Message}";
+                        lines[index] = $"{name}\t失败：{e.Message}\t耗时 {watch.ElapsedMilliseconds}ms";
                         AppLog.Beat.Add($"训练：{name} 分析失败：{e.Message}", LogLevel.Error, e);
                     }
                 });
@@ -461,6 +467,9 @@ namespace OsuPlayer.Game.Music.BeatSync
             sb.AppendLine();
             sb.AppendLine(formatSummary(results));
 
+            totalWatch.Stop();
+            sb.AppendLine($"总耗时：{totalWatch.Elapsed.TotalSeconds:0.0}s（{parallelism} 线程，{maps.Length} 张谱面）");
+
             File.WriteAllText(reportPath, sb.ToString());
             AppLog.Beat.Add($"训练报告已写入：{reportPath}", LogLevel.Important);
 
@@ -486,16 +495,17 @@ namespace OsuPlayer.Game.Music.BeatSync
                 long decodeMs = stage.ElapsedMilliseconds;
 
                 stage.Restart();
-                double[] onset = BpmFeatureBuilder.OnsetEnvelope(samples, sampleRate, out double fps);
+                BpmFeatureBuilder.RhythmFeatures rhythm = BpmFeatureBuilder.Analyse(samples, sampleRate);
+                double fps = rhythm.Fps;
                 long onsetMs = stage.ElapsedMilliseconds;
 
                 stage.Restart();
-                double[] salience = BpmFeatureBuilder.Salience(onset, fps);
+                double[] salience = BpmFeatureBuilder.Salience(rhythm.Onset, fps);
                 var candidates = BpmFeatureBuilder.Candidates(salience);
                 long salienceMs = stage.ElapsedMilliseconds;
 
                 stage.Restart();
-                bool ok = Onnx.BpmMl.TryDetect(salience, candidates, out double bpm);
+                bool ok = Onnx.BpmMl.TryDetect(salience, candidates, rhythm, out double bpm);
                 long modelMs = stage.ElapsedMilliseconds;
                 total.Stop();
 
@@ -559,12 +569,12 @@ namespace OsuPlayer.Game.Music.BeatSync
                     var watch = System.Diagnostics.Stopwatch.StartNew();
                     (float[] samples, int sampleRate) = BeatAnalyser.DecodeMonoSamples(audio);
 
-                    double[] onset = BpmFeatureBuilder.OnsetEnvelope(samples, sampleRate, out double fps);
-                    double[] salience = BpmFeatureBuilder.Salience(onset, fps);
+                    BpmFeatureBuilder.RhythmFeatures rhythm = BpmFeatureBuilder.Analyse(samples, sampleRate);
+                    double[] salience = BpmFeatureBuilder.Salience(rhythm.Onset, rhythm.Fps);
                     var candidates = BpmFeatureBuilder.Candidates(salience);
                     double baseline = candidates.Count > 0 ? candidates[0] : 0;
 
-                    bool ok = Onnx.BpmMl.TryDetect(salience, candidates, out double modelBpm);
+                    bool ok = Onnx.BpmMl.TryDetect(salience, candidates, rhythm, out double modelBpm);
                     watch.Stop();
 
                     var row = new BpmEvalRow(name, truth, baseline, ok ? modelBpm : double.NaN,
@@ -663,8 +673,8 @@ namespace OsuPlayer.Game.Music.BeatSync
                     byte[] audio = await File.ReadAllBytesAsync(audioPath, ct).ConfigureAwait(false);
                     (float[] samples, int sampleRate) = BeatAnalyser.DecodeMonoSamples(audio);
 
-                    double[] onset = BpmFeatureBuilder.OnsetEnvelope(samples, sampleRate, out double fps);
-                    double[] salience = BpmFeatureBuilder.Salience(onset, fps);
+                    BpmFeatureBuilder.RhythmFeatures rhythm = BpmFeatureBuilder.Analyse(samples, sampleRate);
+                    double[] salience = BpmFeatureBuilder.Salience(rhythm.Onset, rhythm.Fps);
                     List<double> candidates = BpmFeatureBuilder.Candidates(salience);
 
                     if (candidates.Count == 0)
@@ -673,7 +683,7 @@ namespace OsuPlayer.Game.Music.BeatSync
                         continue;
                     }
 
-                    float[] features = BpmFeatureBuilder.Features(salience, candidates);
+                    float[] features = BpmFeatureBuilder.Features(salience, candidates, rhythm);
 
                     for (int i = 0; i < candidates.Count; i++)
                     {
@@ -719,6 +729,129 @@ namespace OsuPlayer.Game.Music.BeatSync
             await File.WriteAllTextAsync(outputPath, sb.ToString(), ct).ConfigureAwait(false);
 
             string summary = $"BPM 原生特征导出完成：{written} 首 / {candidateRows} 条候选 → {outputPath}（跳过 {skipped} 首）。";
+            AppLog.Beat.Add(summary, LogLevel.Important);
+            return summary;
+        }
+
+        /// <summary>
+        /// 用真实谱面（.osz）的 [TimingPoints] 作真值，导出与
+        /// <see cref="ExportBpmFeaturesAsync"/> 同格式的 BPM 候选特征 CSV。
+        ///
+        /// 用户手改 timing 往往只有个位数样本，而且集中在中慢速曲（统一被 2× 倍频坑）；
+        /// 只拿它们训练会把「宁可降一半」学成全球策略，快歌跟着遭殃。用成百上千张谱面
+        /// 补齐快歌负样本后，倍频抑制才只作用在真正该降的曲子上。
+        /// 变速谱面（首尾 BPM 差 &gt; 4%）没有单一全局真值，跳过。
+        /// </summary>
+        public static async Task<string> ExportBeatmapBpmFeaturesAsync(string mapDirectory, string outputPath,
+                                                                       int parallelism = 1, CancellationToken ct = default)
+        {
+            string[] maps = Directory.GetFiles(mapDirectory, "*.osz");
+            Array.Sort(maps, StringComparer.OrdinalIgnoreCase);
+
+            parallelism = Math.Max(1, parallelism);
+            var chunks = new string[maps.Length];
+            int written = 0, skipped = 0, candidateRows = 0;
+
+            await Parallel.ForEachAsync(Enumerable.Range(0, maps.Length), new ParallelOptions
+            {
+                MaxDegreeOfParallelism = parallelism,
+                CancellationToken = ct,
+            }, async (index, _) =>
+            {
+                string map = maps[index];
+                string name = Path.GetFileNameWithoutExtension(map);
+
+                try
+                {
+                    (MapTruth truth, byte[] audio) = load(map);
+                    List<TimingPoint> reds = truth.TempoPoints
+                                                  .Where(p => p.BeatLengthMs > 0)
+                                                  .OrderBy(p => p.TimeMs)
+                                                  .ToList();
+
+                    if (reds.Count == 0 || audio.Length == 0)
+                    {
+                        Interlocked.Increment(ref skipped);
+                        return;
+                    }
+
+                    double minBpm = reds.Min(p => 60000.0 / p.BeatLengthMs);
+                    double maxBpm = reds.Max(p => 60000.0 / p.BeatLengthMs);
+
+                    if (minBpm <= 0 || maxBpm / minBpm > 1.04)
+                    {
+                        Interlocked.Increment(ref skipped);
+                        return;
+                    }
+
+                    double truthBpm = 60000.0 / reds[0].BeatLengthMs;
+
+                    (float[] samples, int sampleRate) = BeatAnalyser.DecodeMonoSamples(audio);
+                    BpmFeatureBuilder.RhythmFeatures rhythm = BpmFeatureBuilder.Analyse(samples, sampleRate);
+                    double[] salience = BpmFeatureBuilder.Salience(rhythm.Onset, rhythm.Fps);
+                    List<double> candidates = BpmFeatureBuilder.Candidates(salience);
+
+                    if (candidates.Count == 0)
+                    {
+                        Interlocked.Increment(ref skipped);
+                        return;
+                    }
+
+                    float[] features = BpmFeatureBuilder.Features(salience, candidates, rhythm);
+                    var sb = new StringBuilder();
+
+                    for (int i = 0; i < candidates.Count; i++)
+                    {
+                        int label = acc1(candidates[i], truthBpm) ? 1 : 0;
+
+                        sb.Append('"').Append(name.Replace('"', ' ')).Append('"').Append(',')
+                          .Append('"').Append(name.Replace('"', ' ')).Append('"').Append(',')
+                          .Append(FormatInvariant(truthBpm)).Append(',')
+                          .Append(i).Append(',')
+                          .Append(FormatInvariant(candidates[i])).Append(',')
+                          .Append(label);
+
+                        for (int k = 0; k < BpmFeatureBuilder.FeatureCount; k++)
+                            sb.Append(',').Append(FormatInvariant(features[i * BpmFeatureBuilder.FeatureCount + k]));
+
+                        sb.AppendLine();
+                        Interlocked.Increment(ref candidateRows);
+                    }
+
+                    chunks[index] = sb.ToString();
+                    Interlocked.Increment(ref written);
+                }
+                catch (Exception e)
+                {
+                    Interlocked.Increment(ref skipped);
+                    AppLog.Beat.Add($"谱面 BPM 特征导出：{name} 失败：{e.Message}", LogLevel.Error, e);
+                }
+            });
+
+            var header = new StringBuilder();
+            header.AppendLine("# bpmfeat v1");
+            header.AppendLine("# source=csharp-native");
+            header.AppendLine($"# fft_n={BpmFeatureBuilder.FftN}");
+            header.AppendLine($"# hop={BpmFeatureBuilder.Hop}");
+            header.AppendLine("# features=" + string.Join(",", Enumerable.Range(0, BpmFeatureBuilder.FeatureCount).Select(i => $"f{i}")));
+            header.AppendLine("song_id,song_name,truth_bpm,candidate_index,candidate_bpm,label,"
+                              + string.Join(",", Enumerable.Range(0, BpmFeatureBuilder.FeatureCount).Select(i => $"f{i}")));
+
+            foreach (string? chunk in chunks)
+            {
+                if (chunk is { Length: > 0 })
+                    header.Append(chunk);
+            }
+
+            string? directory = Path.GetDirectoryName(Path.GetFullPath(outputPath));
+
+            if (!string.IsNullOrEmpty(directory))
+                Directory.CreateDirectory(directory);
+
+            await File.WriteAllTextAsync(outputPath, header.ToString(), ct).ConfigureAwait(false);
+
+            string summary = $"谱面 BPM 特征导出完成：{written} 首 / {candidateRows} 条候选 → {outputPath}"
+                             + $"（跳过 {skipped} 首：变速或无红线）。";
             AppLog.Beat.Add(summary, LogLevel.Important);
             return summary;
         }
@@ -967,7 +1100,7 @@ namespace OsuPlayer.Game.Music.BeatSync
                     }
 
                     lines.Add($"{name}\t真值 {truth:0.##}\t原生 {raw:0.##}\t模型 {model:0.##}"
-                              + $"\t{(modelOk ? "✓" : acc2(model, truth) ? "倍频" : "✗")}");
+                              + $"\t{(modelOk ? "✓" : acc2(model, truth) ? "倍频" : "✗")}{phaseColumns(song, details, truth)}");
                 }
                 catch (Exception e)
                 {
@@ -1014,6 +1147,37 @@ namespace OsuPlayer.Game.Music.BeatSync
 
         private readonly record struct BpmEvalRow(string Name, double Truth, double Baseline, double Model,
                                                  long ElapsedMs, int Candidates);
+
+        /// <summary>
+        /// 用户样本的相位诊断列：把检测到的首拍（已含 downbeat 锚点）与手改 timing 的首个红线按
+        /// 拍长 / 小节长折叠，口径与谱面评估的 PhaseErrorMs / BarPhaseErrorMs 一致。
+        /// </summary>
+        private static string phaseColumns(JsonElement song, BeatAnalysisDetails details, double truth)
+        {
+            if (truth <= 0
+                || !song.TryGetProperty("first_beat_ms", out JsonElement firstElement)
+                || !firstElement.TryGetDouble(out double firstBeat))
+                return string.Empty;
+
+            double beatLength = 60000.0 / truth;
+            double phase = foldPhase(details.Result.BeatPhaseMs - firstBeat, beatLength);
+            double rawPhase = foldPhase(details.RawBeatPhaseMs - firstBeat, beatLength);
+            double bar = foldPhase(details.Result.BeatPhaseMs - firstBeat, beatLength * 4);
+
+            return $"\t首拍偏差 {phase:0}ms\t小节偏差 {bar:0}ms\t仲裁前相位 {rawPhase:0}ms";
+        }
+
+        private static double foldPhase(double value, double length)
+        {
+            double folded = value % length;
+
+            if (folded > length / 2)
+                folded -= length;
+            else if (folded < -length / 2)
+                folded += length;
+
+            return folded;
+        }
 
         private static bool acc1(double pred, double truth) => Math.Abs(pred - truth) <= 0.04 * truth;
 

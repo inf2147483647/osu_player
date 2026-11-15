@@ -6,6 +6,7 @@ using osu.Framework.Graphics.Shapes;
 using osu.Framework.Graphics.Sprites;
 using osuTK;
 using osuTK.Graphics;
+using osu.Game.Configuration;
 using OsuPlayer.Game.Music;
 
 namespace OsuPlayer.Game.Graphics.Effects
@@ -23,14 +24,24 @@ namespace OsuPlayer.Game.Graphics.Effects
         /// <summary>模糊半径（高斯 sigma，单位像素）。</summary>
         private static readonly Vector2 blur_sigma = new(7);
 
-        /// <summary>压暗层：模糊后的封面仍可能很亮，压暗保证前景文字可读。</summary>
-        private static readonly Color4 scrim_colour = new Color4(6, 6, 10, 140);
+        /// <summary>
+        /// 压暗层：模糊后的封面仍可能很亮，压暗保证前景文字可读。
+        /// 实际不透明度由 osu! 的「背景暗化」（<see cref="OsuSetting.DimLevel"/>）驱动，
+        /// 默认 0.7 与 osu! 主菜单一致。
+        /// </summary>
+        private static readonly Color4 scrim_colour = new Color4(6, 6, 10, 255);
 
         [Resolved]
         private MusicPlayer player { get; set; } = null!;
 
+        [Resolved]
+        private OsuConfigManager config { get; set; } = null!;
+
         /// <summary>封面层都放这里 —— 放在压暗层下面，新层叠上去也不会盖住压暗。</summary>
         private Container coverHost = null!;
+
+        /// <summary>压暗层本体：透明度跟随「背景暗化」设置。</summary>
+        private Box scrim = null!;
 
         /// <summary>当前这一层的引用：切歌时用它判断新的淡入是否已经完成。</summary>
         private Drawable? coverLayer;
@@ -39,6 +50,12 @@ namespace OsuPlayer.Game.Graphics.Effects
         private void load()
         {
             RelativeSizeAxes = Axes.Both;
+
+            scrim = new Box
+            {
+                RelativeSizeAxes = Axes.Both,
+                Colour = scrim_colour,
+            };
 
             Children = new Drawable[]
             {
@@ -52,11 +69,7 @@ namespace OsuPlayer.Game.Graphics.Effects
                 {
                     RelativeSizeAxes = Axes.Both,
                 },
-                new Box
-                {
-                    RelativeSizeAxes = Axes.Both,
-                    Colour = scrim_colour,
-                },
+                scrim,
             };
         }
 
@@ -65,6 +78,8 @@ namespace OsuPlayer.Game.Graphics.Effects
             base.LoadComplete();
 
             player.CurrentCover.BindValueChanged(e => showCover(e.NewValue), true);
+            config.GetBindable<double>(OsuSetting.DimLevel)
+                  .BindValueChanged(e => scrim.Alpha = (float)e.NewValue, true);
         }
 
         private void showCover(string? coverUrl)

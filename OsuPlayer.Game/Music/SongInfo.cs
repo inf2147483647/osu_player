@@ -57,7 +57,7 @@ namespace OsuPlayer.Game.Music
         /// <summary>Duration exactly as the song lists render it to the right of the label, e.g. "3:28".</summary>
         public string DurationText => FormatDuration(DurationMs);
 
-        /// <summary>Formats a duration the same way the song lists do, e.g. "3:28" (empty when unknown).</summary>
+        /// <summary>Formats a duration the same way the song lists do, e.g. "3:28" / "1:40:00" (empty when unknown).</summary>
         public static string FormatDuration(double durationMs)
         {
             if (durationMs <= 0)
@@ -66,7 +66,14 @@ namespace OsuPlayer.Game.Music
             // Truncate to whole seconds first: rounding the minutes and the seconds independently
             // produced impossible values like "1:60" and inflated minutes ("4:37" shown as "5:37").
             int totalSeconds = (int)(durationMs / 1000);
-            return $"{totalSeconds / 60}:{totalSeconds % 60:00}";
+
+            // 超过一小时的曲目（本地导入的长音频很常见）补上小时位，
+            // 否则分钟会一直累加，出现 "100:00" 这种既难读又和应用其他位置不一致的写法。
+            int hours = totalSeconds / 3600;
+
+            return hours > 0
+                ? $"{hours}:{totalSeconds / 60 % 60:00}:{totalSeconds % 60:00}"
+                : $"{totalSeconds / 60}:{totalSeconds % 60:00}";
         }
     }
 }

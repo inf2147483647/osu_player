@@ -78,6 +78,12 @@ namespace OsuPlayer.Game
 
         private readonly bool trainingOnnx;
 
+        /// <summary>
+        /// 训练并发线程数（<c>--train-threads &lt;n&gt;</c>）。默认串行：BASS 解码流是全局资源，
+        /// 并发过高会在部分机器上撞到解码失败；核数足够时可显式调高。报告会记录实际线程数与耗时。
+        /// </summary>
+        private readonly int trainingThreads = 1;
+
         private readonly string? kiaiExportDirectory;
 
         /// <summary>
@@ -108,6 +114,14 @@ namespace OsuPlayer.Game
         private readonly string? bpmFeatureManifestPath;
 
         private readonly string? bpmFeatureOutputPath;
+
+        /// <summary>
+        /// 谱面 BPM 特征导出（<c>--export-beatmap-bpm-features &lt;目录&gt; &lt;csv&gt;</c>）：
+        /// 用目录下 .osz 的 [TimingPoints] 作真值，导出与 <c>--export-bpm-features</c>
+        /// 同格式的候选特征，配合 <c>--train-threads</c> 并行。用于把真实谱面补进用户样本训练。
+        /// </summary>
+        private readonly string? beatmapFeatureDirectory;
+        private readonly string? beatmapFeatureOutputPath;
 
         /// <summary>
         /// C# 原生 BPM 端到端评测（<c>--eval-user-bpm &lt;manifest.json&gt; &lt;report.txt&gt;</c>）：
@@ -148,6 +162,12 @@ namespace OsuPlayer.Game
                     trainingDirectory = args[i]["--train-beatmaps=".Length..];
                 else if (args[i] == "--train-onnx")
                     trainingOnnx = true;
+                else if (args[i] == "--train-threads" && i + 1 < args.Length
+                         && int.TryParse(args[i + 1], out int threads))
+                    trainingThreads = Math.Max(1, threads);
+                else if (args[i].StartsWith("--train-threads=", StringComparison.Ordinal)
+                         && int.TryParse(args[i]["--train-threads=".Length..], out int inlineThreads))
+                    trainingThreads = Math.Max(1, inlineThreads);
                 else if (args[i] == "--export-kiai-data" && i + 1 < args.Length)
                     kiaiExportDirectory = args[i + 1];
                 else if (args[i].StartsWith("--export-kiai-data=", StringComparison.Ordinal))
@@ -180,6 +200,12 @@ namespace OsuPlayer.Game
                 {
                     bpmFeatureManifestPath = args[i + 1];
                     bpmFeatureOutputPath = args[i + 2];
+                    i += 2;
+                }
+                else if (args[i] == "--export-beatmap-bpm-features" && i + 2 < args.Length)
+                {
+                    beatmapFeatureDirectory = args[i + 1];
+                    beatmapFeatureOutputPath = args[i + 2];
                     i += 2;
                 }
                 else if (args[i] == "--eval-user-bpm" && i + 2 < args.Length)
@@ -218,7 +244,14 @@ namespace OsuPlayer.Game
                 screenStack = new ScreenStack { RelativeSizeAxes = Axes.Both }));
 
             // Added last so toasts and the history overlay draw above the whole screen stack.
-            Content.Add(notifications);
+            // 通知抽屉（osu! 官方 NotificationOverlay）从顶栏下沿开始展开：它本身是贴窗口右缘的
+            // 320px 全高面板，这里让出顶栏高度，抽屉打开时顶栏（包括通知按钮）仍可点击，再点一次即可收起。
+            Content.Add(new Container
+            {
+                RelativeSizeAxes = Axes.Both,
+                Padding = new MarginPadding { Top = UiLayout.TopBarHeight },
+                Child = notifications,
+            });
             Content.Add(dialogs);
 
             // 右下角帧率：直接复用 osu! 本体的 FPSCounter（Anchor.BottomRight + 边距 5，与 osu! 一致），
@@ -267,6 +300,12 @@ namespace OsuPlayer.Game
                 return;
             }
 
+            if (beatmapFeatureDirectory is not null && beatmapFeatureOutputPath is not null)
+            {
+                _ = runBeatmapFeatureExportAsync();
+                return;
+            }
+
             if (bpmFeatureManifestPath is not null && bpmFeatureOutputPath is not null)
             {
                 _ = runBpmFeatureExportAsync();
@@ -310,7 +349,7 @@ namespace OsuPlayer.Game
         {
             try
             {
-                string report = await BeatmapTraining.RunAsync(trainingDirectory!, trainingReportPath!, trainingOnnx).ConfigureAwait(false);
+                string report = await BeatmapTraining.RunAsync(trainingDirectory!, trainingReportPath!, trainingOnnx, trainingThreads).ConfigureAwait(false);
                 Console.WriteLine(report);
                 Console.Out.Flush();
             }
@@ -520,6 +559,26 @@ namespace OsuPlayer.Game
             catch (Exception e)
             {
                 Console.Error.WriteLine($"BPM 原生特征导出失败：{e}");
+                Console.Error.Flush();
+            }
+            finally
+            {
+                Schedule(() => Host.Exit());
+            }
+        }
+
+        private async Task runBeatmapFeatureExportAsync()
+        {
+            try
+            {
+                string summary = await BeatmapTraining.ExportBeatmapBpmFeaturesAsync(
+                    beatmapFeatureDirectory!, beatmapFeatureOutputPath!, trainingThreads).ConfigureAwait(false);
+                Console.WriteLine(summary);
+                Console.Out.Flush();
+            }
+            catch (Exception e)
+            {
+                Console.Error.WriteLine($"谱面 BPM 特征导出失败：{e}");
                 Console.Error.Flush();
             }
             finally

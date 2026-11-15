@@ -40,13 +40,13 @@ namespace OsuPlayer.Game.Music.BeatSync.Onnx
 
             try
             {
-                double[] onset = BpmFeatureBuilder.OnsetEnvelope(samples, sampleRate, out double fps);
+                BpmFeatureBuilder.RhythmFeatures rhythm = BpmFeatureBuilder.Analyse(samples, sampleRate);
 
-                if (onset.Length < 8 || fps <= 0)
+                if (rhythm.Onset.Length < 8 || rhythm.Fps <= 0)
                     return false;
 
-                double[] salience = BpmFeatureBuilder.Salience(onset, fps);
-                return TryDetect(salience, BpmFeatureBuilder.Candidates(salience), out bpm);
+                double[] salience = BpmFeatureBuilder.Salience(rhythm.Onset, rhythm.Fps);
+                return TryDetect(salience, BpmFeatureBuilder.Candidates(salience), rhythm, out bpm);
             }
             catch (Exception e)
             {
@@ -57,15 +57,17 @@ namespace OsuPlayer.Game.Music.BeatSync.Onnx
 
         /// <summary>
         /// 已算好显著度与候选时直接打分（评测里要复用同一份特征算基线，避免重复计算）。
+        /// <paramref name="rhythm"/> 提供低频与色度，缺少它新加的 4 维特征无法计算。
         /// </summary>
-        public static bool TryDetect(double[] salience, IReadOnlyList<double> candidates, out double bpm)
+        public static bool TryDetect(double[] salience, IReadOnlyList<double> candidates,
+                                     BpmFeatureBuilder.RhythmFeatures rhythm, out double bpm)
         {
             bpm = 0;
 
             if (model.Value is null || candidates.Count == 0)
                 return false;
 
-            float[] features = BpmFeatureBuilder.Features(salience, candidates);
+            float[] features = BpmFeatureBuilder.Features(salience, candidates, rhythm);
             return TryScore(features, candidates, out bpm);
         }
 

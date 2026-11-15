@@ -54,6 +54,12 @@ namespace OsuPlayer.Game.Music
         public BindableDouble LengthMs { get; } = new();
         public BindableFloat Volume { get; } = new(0.8f);
         public BindableDouble Tempo { get; } = new(1);
+
+        /// <summary>
+        /// 声音变调（默认关闭）。关闭时倍速走时间伸缩，音高不变；打开后改用重采样，
+        /// 音高随速度一起升降（类似黑胶加速）。由底栏「倍数」卡片里的开关控制，随播放状态持久化。
+        /// </summary>
+        public BindableBool PitchShift { get; } = new();
         public Bindable<string> Quality { get; } = new("128");
         public Bindable<RepeatMode> Repeat { get; } = new(RepeatMode.All);
 
@@ -348,11 +354,8 @@ namespace OsuPlayer.Game.Music
             Tempo.MaxValue = 3.0;
             Tempo.Precision = 0.01;
 
-            Tempo.BindValueChanged(v =>
-            {
-                if (currentTrack is not null)
-                    currentTrack.Tempo.Value = v.NewValue;
-            });
+            Tempo.BindValueChanged(_ => applyTempo());
+            PitchShift.BindValueChanged(_ => applyTempo());
 
             restoreState();
         }
@@ -365,6 +368,7 @@ namespace OsuPlayer.Game.Music
             // Bound here rather than in load() so the restored values do not immediately re-save.
             Volume.BindValueChanged(_ => queueStateSave());
             Tempo.BindValueChanged(_ => queueStateSave());
+            PitchShift.BindValueChanged(_ => queueStateSave());
             Quality.BindValueChanged(_ => queueStateSave());
             Repeat.BindValueChanged(_ => queueStateSave());
             BpmMode.BindValueChanged(_ => queueStateSave());
@@ -518,17 +522,57 @@ namespace OsuPlayer.Game.Music
         /// <summary>首页推荐缓存。推荐页只在点「刷新推荐」时重新拉取，进入页面直接显示这份缓存。</summary>
         public IReadOnlyList<SongInfo>? CachedRecommend { get; private set; }
 
-        /// <summary>单次拉取的推荐条数（酷狗接口的 pagesize）。</summary>
+        /// <summary>推荐接口的 pagesize。服务端实际每次只回约 8 首。</summary>
         private const int recommend_page_size = 50;
 
-        public async Task<IReadOnlyList<SongInfo>> GetRecommendAsync()
-        {
-            IReadOnlyList<SongInfo> songs = await AppLog.Player.TimeAsync("获取首页推荐",
-                () => mapAsync(() => api.GetHomeRecommendAsync(recommend_page_size), KuGouMapper.HomeRecommend),
-                r => $"，{r.Count} 首").ConfigureAwait(true);
+        /// <summary>一次刷新连续请求的次数：8 × 7 ≈ 50 首。</summary>
+        private const int recommend_request_count = 7;
 
-            CachedRecommend = songs;
-            return songs;
+        /// <summary>
+        /// 刷新推荐：连续请求 <see cref="recommend_request_count"/> 次（每次约 8 首，合计约 50 首）。
+        /// 每成功一批就回调一次，参数是<b>累计列表</b>（顺序即请求顺序，调用方只能往末尾追加）；
+        /// 失败的批次直接跳过，不影响后续批次；批内与跨批都按 hash 去重。
+        /// <see cref="CachedRecommend"/> 随批次追加，中途离开页面再回来也能看到已到达的部分。
+        /// </summary>
+        public async Task<IReadOnlyList<SongInfo>> RefreshRecommendAsync(Action<IReadOnlyList<SongInfo>>? onBatch = null)
+        {
+            var accumulated = new List<SongInfo>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            CachedRecommend = accumulated;
+
+            for (int i = 0; i < recommend_request_count; i++)
+            {
+                IReadOnlyList<SongInfo> batch;
+
+                try
+                {
+                    batch = await AppLog.Player.TimeAsync($"获取首页推荐（{i + 1}/{recommend_request_count}）",
+                        () => mapAsync(() => api.GetHomeRecommendAsync(recommend_page_size), KuGouMapper.HomeRecommend),
+                        r => $"，{r.Count} 首").ConfigureAwait(true);
+                }
+                catch (Exception e)
+                {
+                    // 单批失败不影响整体：跳过这一批，继续请求下一批。
+                    AppLog.Player.Add($"推荐第 {i + 1} 批失败，已跳过：{e.Message}", LogLevel.Important, e);
+                    continue;
+                }
+
+                int added = 0;
+
+                foreach (SongInfo song in batch)
+                {
+                    if (string.IsNullOrEmpty(song.Hash) || !seen.Add(song.Hash))
+                        continue;
+
+                    accumulated.Add(song);
+                    added++;
+                }
+
+                if (added > 0)
+                    onBatch?.Invoke(accumulated);
+            }
+
+            return accumulated;
         }
 
         public Task<IReadOnlyList<SongInfo>> GetPersonalFmAsync()
@@ -1069,6 +1113,7 @@ namespace OsuPlayer.Game.Music
                     ["volume"] = Volume.Value,
                     ["quality"] = Quality.Value,
                     ["tempo"] = Tempo.Value,
+                    ["pitchShift"] = PitchShift.Value,
                     ["repeat"] = Repeat.Value.ToString(),
                     ["bpmMode"] = BpmMode.Value.ToString(),
                     ["debugMode"] = DebugMode.Value,
@@ -1143,6 +1188,7 @@ namespace OsuPlayer.Game.Music
 
                 Volume.Value = (float)(state["volume"]?.Value<double>() ?? Volume.Value);
                 Tempo.Value = state["tempo"]?.Value<double>() ?? Tempo.Value;
+                PitchShift.Value = state["pitchShift"]?.Value<bool>() ?? PitchShift.Value;
                 Repeat.Value = Enum.TryParse(state["repeat"]?.ToString(), out RepeatMode repeat) ? repeat : Repeat.Value;
                 BpmMode.Value = Enum.TryParse(state["bpmMode"]?.ToString(), out BpmDetectionMode bpmMode) ? bpmMode : BpmMode.Value;
                 DebugMode.Value = state["debugMode"]?.Value<bool>() ?? DebugMode.Value;
@@ -1240,7 +1286,7 @@ namespace OsuPlayer.Game.Music
                         urlCache[key] = (url, expiresAt);
                 }
 
-                AppLog.Player.Add($"已恢复播放状态：音量 {Volume.Value:0.##}，音质 {Quality.Value}，倍速 {Tempo.Value:0.##}x，循环 {Repeat.Value}，喜欢 {Liked.Count} 首，历史 {History.Count} 首，本地 {LocalTracks.Count} 首，手改 timing {timingOverrides.Count} 首，缓存地址 {urlCache.Count} 首"
+                AppLog.Player.Add($"已恢复播放状态：音量 {Volume.Value:0.##}，音质 {Quality.Value}，倍速 {Tempo.Value:0.##}x，变调 {(PitchShift.Value ? "开" : "关")}，循环 {Repeat.Value}，喜欢 {Liked.Count} 首，历史 {History.Count} 首，本地 {LocalTracks.Count} 首，手改 timing {timingOverrides.Count} 首，缓存地址 {urlCache.Count} 首"
                                   + (restoredLogin ? $"，已恢复登录（用户 ID {LoginUserId}）" : string.Empty), LogLevel.Important);
             }
             catch (FileNotFoundException)
@@ -1459,6 +1505,29 @@ namespace OsuPlayer.Game.Music
         {
             Tempo.Value = tempo;
             AppLog.Player.Add($"倍速切换为：{Tempo.Value:0.00}x", LogLevel.Important);
+        }
+
+        /// <summary>
+        /// 把倍速同步到当前音轨，两种实现互斥：
+        /// 变调关闭（默认）用 <see cref="Track.Tempo"/> —— BASS_FX 时间伸缩，速度变、音高不变；
+        /// 变调打开用 <see cref="Track.Frequency"/> —— 直接重采样，音高随速度一起变。
+        /// 同时只开一个，否则两种缩放会叠加导致速度翻倍。
+        /// </summary>
+        private void applyTempo()
+        {
+            if (currentTrack is null)
+                return;
+
+            if (PitchShift.Value)
+            {
+                currentTrack.Tempo.Value = 1;
+                currentTrack.Frequency.Value = Tempo.Value;
+            }
+            else
+            {
+                currentTrack.Frequency.Value = 1;
+                currentTrack.Tempo.Value = Tempo.Value;
+            }
         }
 
         /// <summary>
@@ -1931,7 +2000,7 @@ namespace OsuPlayer.Game.Music
                 holdActive = false;
                 holdSubmitted = false;
                 clearPendingSeek();
-                track.Tempo.Value = Tempo.Value;
+                applyTempo();
 
                 // 试听片段：进度条仍展示整首歌长度，但只允许拖到片段实际解码长度。
                 isPreviewTrack = preview;
@@ -3298,8 +3367,15 @@ namespace OsuPlayer.Game.Music
         public sealed record AccountProfile(string Nickname, string? AvatarUrl, long UserId,
             string Gender, string Birthday, string MusicAge);
 
-        /// <summary>概念版两种会员的到期时间文案（畅听 = tvip，概念 = svip）。</summary>
-        public sealed record AccountVip(string ChangTingExpiry, string ConceptExpiry);
+        /// <summary>账号面板中的一条会员权益（名称 + 到期文案）。</summary>
+        public sealed record VipMembership(string Label, string Expiry);
+
+        /// <summary>
+        /// 账号的会员权益列表，对齐 EchoMusic（accountVip.ts / SidebarAccountPopover）：
+        /// 超级VIP（user_type &amp; 16）、豪华VIP（vip_type = 6）、概念会员（svip）、畅听会员（tvip）。
+        /// 每档会员只用自己的到期时间，互不覆盖。
+        /// </summary>
+        public sealed record AccountVip(IReadOnlyList<VipMembership> Memberships);
 
         /// <summary>
         /// 读取账号档案（module/user_info.js）。字段名随接口版本变化，这里按候选名宽松查找；
@@ -3399,44 +3475,113 @@ namespace OsuPlayer.Game.Music
         }
 
         /// <summary>
-        /// 畅听会员（tvip）与概念会员（svip）的到期时间：来自 module/user_vip_detail.js 的
-        /// <c>data.busi_vip[]</c>，其 <c>vip_end_time</c> 本身就是「yyyy-MM-dd HH:mm:ss」（精确到秒）。
+        /// 会员权益与到期时间：来自 module/youth_union_vip.js 的 <c>data</c>。
+        /// 顶层字段用于超级VIP / 豪华VIP，<c>busi_vip[]</c> 用于概念会员（svip）与畅听会员（tvip）。
         /// </summary>
         public async Task<AccountVip> GetVipExpiriesAsync()
         {
             if (!api.Session.IsLoggedIn)
-                return new AccountVip("未登录", "未登录");
+                return message("未登录");
 
             try
             {
                 JObject response = await api.GetUserVipDetailAsync().ConfigureAwait(false);
 
-                if (nested(response, "data", "busi_vip") is not JArray products || products.Count == 0)
+                if (nested(response, "data") is not JObject data)
+                    return message($"未获取到（{failureText(response)}）");
+
+                JArray products = data["busi_vip"] as JArray ?? new JArray();
+                var memberships = new List<VipMembership>();
+
+                string raw = data.ToString(Newtonsoft.Json.Formatting.None);
+                AppLog.Player.Add($"会员数据原始：{(raw.Length <= 600 ? raw : raw[..600] + "…")}");
+
+                int userType = int.TryParse(data["user_type"]?.ToString(), out int parsedUserType) ? parsedUserType : 0;
+
+                if ((userType & 16) != 0)
+                    memberships.Add(new VipMembership("超级VIP", expiryText(data["su_vip_end_time"])));
+
+                int vipType = int.TryParse(data["vip_type"]?.ToString(), out int parsedVipType) ? parsedVipType : 0;
+
+                if (vipType == 6)
+                    memberships.Add(new VipMembership("豪华VIP", expiryText(data["vip_end_time"])));
+
+                // 概念版 VIP 与畅听 VIP 各用自己的到期时间：官方「会员生效时长」里
+                // 畅听VIP = 随心畅听包 / 畅听VIP 的结束时间，可能晚于概念版 VIP。
+                string? conceptDate = productDate(products, "svip");
+
+                if (conceptDate is not null)
+                    memberships.Add(new VipMembership("概念会员", $"到期 {conceptDate}"));
+
+                string? listenDate = latestDate(
+                    productDate(products, "tvip"),
+                    dateOf(data["listen_end_time"]),
+                    dateOf(data["m_end_time"]),
+                    dateOf(data["vip_end_time"]));
+
+                if (listenDate is not null)
                 {
-                    string reason = $"未获取到（{failureText(response)}）";
-                    return new AccountVip(reason, reason);
+                    // 概念版权限里 tvip 会随 svip 一起下发（两者只差几秒），此时如实标注来源，
+                    // 避免看起来像把概念版的日期复制了一份。
+                    string note = listenDate == conceptDate ? "（随概念版）" : string.Empty;
+                    memberships.Add(new VipMembership("畅听会员", $"到期 {listenDate}{note}"));
+                }
+                else if (productActive(products, "tvip"))
+                {
+                    memberships.Add(new VipMembership("畅听会员", "已开通"));
                 }
 
-                return new AccountVip(productExpiry(products, "tvip"), productExpiry(products, "svip"));
+                return memberships.Count > 0 ? new AccountVip(memberships) : message("未开通任何会员");
             }
             catch (Exception e)
             {
-                string reason = $"查询失败：{e.Message}";
-                return new AccountVip(reason, reason);
+                return message($"查询失败：{e.Message}");
             }
+
+            static AccountVip message(string text) => new(new[] { new VipMembership("会员", text) });
         }
 
-        /// <summary>从 busi_vip 取指定产品的到期时间；未开通时给出明确文案。</summary>
-        private static string productExpiry(JArray products, string productType)
+        /// <summary>该产品是否处于开通状态（busi_vip 里 is_vip = 1）。</summary>
+        private static bool productActive(JArray products, string productType)
         {
             JToken? product = products.FirstOrDefault(p => p["product_type"]?.ToString() == productType);
 
-            if (product is null || product["is_vip"]?.Value<int>() != 1)
-                return "未开通";
+            return product?["is_vip"]?.ToString() == "1";
+        }
 
-            string? expiry = formatDateTime(product["vip_end_time"]?.ToString(), "yyyy-MM-dd HH:mm:ss");
+        /// <summary>从 busi_vip 取指定产品的到期日期（yyyy-MM-dd）；该产品未开通时返回 null。</summary>
+        private static string? productDate(JArray products, string productType)
+        {
+            if (!productActive(products, productType))
+                return null;
 
-            return string.IsNullOrEmpty(expiry) ? "已开通（无到期时间）" : $"到期 {expiry}";
+            JToken? product = products.FirstOrDefault(p => p["product_type"]?.ToString() == productType);
+            return dateOf(product?["vip_end_time"]);
+        }
+
+        /// <summary>接口时间戳 → yyyy-MM-dd；缺失或无法解析时返回 null。</summary>
+        private static string? dateOf(JToken? token) => formatDateTime(token?.ToString(), "yyyy-MM-dd");
+
+        /// <summary>多个候选日期里取最晚的一个（同为 yyyy-MM-dd，可直接按序号比较）。</summary>
+        private static string? latestDate(params string?[] candidates)
+        {
+            string? latest = null;
+
+            foreach (string? candidate in candidates)
+            {
+                if (!string.IsNullOrEmpty(candidate) && (latest is null || string.CompareOrdinal(candidate, latest) > 0))
+                    latest = candidate;
+            }
+
+            return latest;
+        }
+
+        /// <summary>到期文案：接口给「yyyy-MM-dd HH:mm:ss」时只展示日期；缺时间时说明「已开通」。</summary>
+        private static string expiryText(JToken? token)
+        {
+            string? expiry = formatDateTime(token?.ToString(), "yyyy-MM-dd");
+
+            return string.IsNullOrEmpty(expiry) ? "已开通" : $"到期 {expiry}";
         }
 
         /// <summary>性别：0 女 / 1 男 / 2 保密。</summary>

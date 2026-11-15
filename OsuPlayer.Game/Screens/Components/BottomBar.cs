@@ -7,6 +7,7 @@ using osu.Framework.Graphics.Containers;
 using osu.Framework.Graphics.Sprites;
 using osu.Game.Beatmaps;
 using osu.Game.Graphics;
+using osu.Game.Graphics.Containers;
 using osu.Game.Overlays;
 using osu.Game.Overlays.Notifications;
 using osuTK;
@@ -50,6 +51,11 @@ namespace OsuPlayer.Game.Screens.Components
         private UiIconButton volumeButton = null!;
         private SpriteText currentTimeText = null!;
         private SpriteText lengthTimeText = null!;
+        private SpriteText lengthTimeSign = null!;
+        private OsuClickableContainer lengthTimeButton = null!;
+
+        /// <summary>总时长文字当前是否显示「剩余时间」（点击切换，默认显示总时长）。</summary>
+        private bool showRemainingTime;
         private SeekSliderBar progress = null!;
         private CommittingRoundedSliderBar<float> volumeSlider = null!;
 
@@ -69,7 +75,9 @@ namespace OsuPlayer.Game.Screens.Components
         private const float tools_gap = 44;
 
         /// <summary>「00:00」还没量出宽度时用的兜底值（字体 26、格式固定）。</summary>
-        private const float fallback_time_width = 92;
+        /// <summary>时间文字还没量出宽度时的兜底值（按 h:mm:ss + 符号位的最宽情况留）。</summary>
+        private const float fallback_time_width = 132;
+
 
         /// <summary>七个工具按钮还没量出宽度时用的兜底值：图标 20 + 两侧 9 留白 ×7，加 6 个 20 间距。</summary>
         private const float fallback_tools_width = 7 * 38 + 6 * 20;
@@ -144,7 +152,26 @@ namespace OsuPlayer.Game.Screens.Components
                             OnSeek = ms => player.Seek(ms),
                         },
 
-                        lengthTimeText = makeTimeText(Vector2.Zero),
+                        // 总时长文字可点击：在「总时长 / 剩余时间」之间切换。
+                        // 「-」号始终占位（只是透明度切换），保证两种模式的字符数一致、进度条不左右移动。
+                        lengthTimeButton = new OsuClickableContainer
+                        {
+                            Anchor = Anchor.CentreLeft,
+                            Origin = Anchor.CentreLeft,
+                            AutoSizeAxes = Axes.Both,
+                            Action = toggleRemainingTime,
+                            TooltipText = "点击切换为剩余时间",
+                            Child = new FillFlowContainer
+                            {
+                                AutoSizeAxes = Axes.Both,
+                                Direction = FillDirection.Horizontal,
+                                Children = new Drawable[]
+                                {
+                                    lengthTimeSign = makeTimeText(Vector2.Zero),
+                                    lengthTimeText = makeTimeText(Vector2.Zero),
+                                },
+                            },
+                        },
 
                         toolsRow = new FillFlowContainer
                         {
@@ -168,6 +195,12 @@ namespace OsuPlayer.Game.Screens.Components
                     },
                 },
             };
+
+            // 「-」号常驻占位（默认透明），两侧字符数才会一致。
+            // AlwaysPresent：Alpha=0 的 drawable 默认不参与自动尺寸计算，那样占位就失效了。
+            lengthTimeSign.Text = "-";
+            lengthTimeSign.Alpha = 0;
+            lengthTimeSign.AlwaysPresent = true;
 
             // 进度条需要一个 BindableNumber 来定义取值范围，但**不能**直接绑 CurrentTimeMs：
             // 播放循环每帧都会写回播放位置，双向绑定下会和正在拖动的用户抢同一个 bindable，
@@ -214,13 +247,16 @@ namespace OsuPlayer.Game.Screens.Components
         public override bool ReceivePositionalInputAt(Vector2 screenSpacePos)
             => base.ReceivePositionalInputAt(screenSpacePos) && ToLocalSpace(screenSpacePos).Y >= controls_top;
 
-        /// <summary>底行的时间文字：纵向居中于底行、从该位置开始向右排。</summary>
+        /// <summary>
+        /// 底行的时间文字：纵向居中于底行、从该位置开始向右排。
+        /// 用等宽字形（fixedWidth），否则数字宽度不同会让进度条每秒左右抖动。
+        /// </summary>
         private SpriteText makeTimeText(Vector2 position) => new()
         {
             Anchor = Anchor.CentreLeft,
             Origin = Anchor.CentreLeft,
             Position = position,
-            Font = OsuFont.GetFont(size: 26),
+            Font = OsuFont.GetFont(size: 26, fixedWidth: true),
             Colour = Color4.White,
             Text = "00:00",
         };
@@ -236,7 +272,7 @@ namespace OsuPlayer.Game.Screens.Components
                 return;
 
             // 时间文字与工具按钮都是自动尺寸，首帧还没量出宽度时用兜底值，下一帧就是实测值。
-            float timeWidth = Math.Max(currentTimeText.DrawWidth, lengthTimeText.DrawWidth);
+            float timeWidth = Math.Max(currentTimeText.DrawWidth, lengthTimeButton.DrawWidth);
             if (timeWidth <= 0)
                 timeWidth = fallback_time_width;
 
@@ -247,17 +283,35 @@ namespace OsuPlayer.Game.Screens.Components
 
             progress.X = progressLeft;
             progress.Width = Math.Max(120, progressRight - progressLeft);
-            lengthTimeText.X = progressLeft + progress.Width + time_gap;
+            lengthTimeButton.X = progressLeft + progress.Width + time_gap;
         }
 
         protected override void Update()
         {
             base.Update();
 
-            currentTimeText.Text = formatTime(player.CurrentTimeMs.Value);
-            lengthTimeText.Text = formatTime(player.LengthMs.Value);
+            // 超过一小时的曲目整首统一带小时位：播放中字符数不变，进度条就不会被推来推去。
+            bool withHours = player.LengthMs.Value >= 3_600_000;
+
+            currentTimeText.Text = formatTime(player.CurrentTimeMs.Value, withHours);
+
+            lengthTimeText.Text = showRemainingTime
+                ? formatTime(Math.Max(0, player.LengthMs.Value - player.CurrentTimeMs.Value), withHours)
+                : formatTime(player.LengthMs.Value, withHours);
 
             layoutBottomRow();
+        }
+
+        /// <summary>点击总时长文字：在「总时长」和「剩余时间」之间切换。</summary>
+        private void toggleRemainingTime()
+        {
+            showRemainingTime = !showRemainingTime;
+
+            // 「-」只是一个常驻的占位字符，只切透明度，不参与布局变化。
+            lengthTimeSign.Alpha = showRemainingTime ? 1 : 0;
+            lengthTimeButton.TooltipText = showRemainingTime ? "点击切换为总时长" : "点击切换为剩余时间";
+
+            AppLog.Ui.Add($"底栏时间切换：{(showRemainingTime ? "剩余时间" : "总时长")}");
         }
 
         private void updatePlayLabel()
@@ -402,10 +456,20 @@ namespace OsuPlayer.Game.Screens.Components
             likeButton.IconColour = liked ? new Color4(255, 102, 171, 255) : Color4.White;
         }
 
-        private static string formatTime(double ms)
+        /// <summary>
+        /// 底栏时间格式：分钟版 <c>mm:ss</c>，小时版 <c>h:mm:ss</c>。
+        /// <paramref name="withHours"/> 由整首时长决定（而不是当前值），保证一首歌里字符数恒定。
+        /// </summary>
+        private static string formatTime(double ms, bool withHours)
         {
             int totalSeconds = Math.Max(0, (int)(ms / 1000));
-            return $"{totalSeconds / 60:00}:{totalSeconds % 60:00}";
+            int seconds = totalSeconds % 60;
+            int minutes = totalSeconds / 60 % 60;
+            int hours = totalSeconds / 3600;
+
+            return withHours
+                ? $"{hours}:{minutes:00}:{seconds:00}"
+                : $"{minutes:00}:{seconds:00}";
         }
     }
 }

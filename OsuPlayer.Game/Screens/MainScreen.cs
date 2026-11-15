@@ -13,6 +13,7 @@ using osuTK;
 using osuTK.Graphics;
 using osuTK.Input;
 using osu.Game.Beatmaps;
+using osu.Game.Configuration;
 using osu.Game.Graphics;
 using osu.Game.Graphics.Containers;
 using osu.Game.Input.Bindings;
@@ -46,11 +47,20 @@ namespace OsuPlayer.Game.Screens
         [Resolved]
         private INotificationOverlay notificationOverlay { get; set; } = null!;
 
+        [Resolved]
+        private OsuConfigManager config { get; set; } = null!;
+
         private SpriteText titleText = null!;
         private SpriteText artistText = null!;
         private SpriteText statusText = null!;
         private SidePanel sidePanel = null!;
         private TimingEditorPanel timingEditor = null!;
+
+        /// <summary>
+        /// 抽屉打开且未固定时铺在内容之上的透明点击层：点它（= 抽屉外）就收起抽屉。
+        /// 放在顶栏/底栏之下，所以打开抽屉时顶栏导航与播放控制仍然可用。
+        /// </summary>
+        private OsuClickableContainer outsideClickCatcher = null!;
 
         private MenuSideFlashes sideFlashes = null!;
         private KiaiFountains kiaiFountains = null!;
@@ -164,6 +174,16 @@ namespace OsuPlayer.Game.Screens
                 // Bottom transport area.
                 new BottomBar { OnNavigate = showPanel },
 
+                // 点击抽屉外的部分 → 收起未固定的抽屉。
+                // 用 Alpha 开关：Alpha 为 0 时 IsPresent=false，完全不参与命中测试，
+                // 不会挡住 BPM 状态、圆饼等内容；需要时用一个不可见的极小 Alpha 激活。
+                outsideClickCatcher = new OsuClickableContainer
+                {
+                    RelativeSizeAxes = Axes.Both,
+                    Alpha = 0,
+                    Action = closeUnpinnedDrawers,
+                },
+
                 // Bars above the content, slide-in panel above everything, right-docked timing split view on top.
                 new TopBar { OnNavigate = showPanel },
                 sidePanel = new SidePanel(),
@@ -195,6 +215,42 @@ namespace OsuPlayer.Game.Screens
 
             player.CurrentSong.BindValueChanged(onSongChanged, true);
             ((MusicBeatSyncProvider)beatSync).AnalysisStatus.BindValueChanged(onStatusChanged, true);
+
+            // 「星星喷泉」直接复用 osu! 的同名设置（默认开启）。Alpha = 0 时 KiaiFountains
+            // 不再参与更新，也就不会产生喷泉；同一份设置对外部全屏特效子进程同样生效。
+            config.GetBindable<bool>(OsuSetting.StarFountains)
+                  .BindValueChanged(e => kiaiFountains.Alpha = e.NewValue ? 1 : 0, true);
+        }
+
+        protected override void Update()
+        {
+            base.Update();
+
+            // 只有「抽屉开着且没固定」时才接管点击；固定的抽屉旁边内容照常可交互。
+            bool shouldCatch = (sidePanel.IsOpen && !sidePanel.Pinned)
+                               || (timingEditor.IsOpen && !timingEditor.Pinned);
+
+            if (shouldCatch == catcherActive)
+                return;
+
+            catcherActive = shouldCatch;
+
+            // ClickableContainer 不论 Enabled 都会吃掉命中它的点击，所以用 Alpha 控制
+            // 是否参与命中测试：0 = 不在输入队列里（内容可正常点击），极小值 = 隐身但可命中。
+            outsideClickCatcher.Alpha = shouldCatch ? 0.001f : 0f;
+        }
+
+        /// <summary>点击层当前是否处于激活（隐身但可命中）状态。</summary>
+        private bool catcherActive;
+
+        /// <summary>点击抽屉外时收起所有未固定的抽屉；固定住的保持不变。</summary>
+        private void closeUnpinnedDrawers()
+        {
+            if (sidePanel.IsOpen && !sidePanel.Pinned)
+                sidePanel.HidePanel();
+
+            if (timingEditor.IsOpen && !timingEditor.Pinned)
+                timingEditor.Hide();
         }
 
         private void onSongChanged(ValueChangedEvent<SongInfo?> e)
