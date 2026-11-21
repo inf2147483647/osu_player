@@ -869,6 +869,12 @@ namespace OsuPlayer.Game.Screens.Components
                 Spacing = new Vector2(0, 10),
                 Children = new Drawable[]
                 {
+                    new SpriteText
+                    {
+                        Font = OsuFont.GetFont(size: 15),
+                        Colour = new Color4(150, 150, 160, 255),
+                        Text = $"当前平台：{player.ActivePlatform.Value.DisplayName()}（在账号面板切换）",
+                    },
                     searchBox,
                     searchNotice,
                     buildSearchHistory(),
@@ -1630,15 +1636,204 @@ namespace OsuPlayer.Game.Screens.Components
 
         // -------- Account / QR login --------
 
+        /// <summary>
+        /// 平台选择器。两个平台的账号彼此独立，这里只切换「当前操作的平台」：
+        /// 之后搜索、推荐、登录都走所选平台，队列里已有的歌仍按各自平台继续播放。
+        /// </summary>
+        private void addPlatformSelector(FillFlowContainer host)
+        {
+            var row = new FillFlowContainer
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Horizontal,
+                Spacing = new Vector2(8, 0),
+            };
+
+            foreach (MusicPlatform platform in new[] { MusicPlatform.KuGou, MusicPlatform.NetEase })
+            {
+                var button = new OsuPlayerButton
+                {
+                    Width = 160,
+                    Height = 38,
+                    Text = platform.DisplayName(),
+                };
+
+                button.BackgroundColour = platform == player.ActivePlatform.Value ? tab_active_colour : tab_idle_colour;
+
+                MusicPlatform captured = platform;
+                button.Action = () =>
+                {
+                    if (captured == player.ActivePlatform.Value)
+                        return;
+
+                    AppLog.Ui.Add($"切换音乐平台：{captured.DisplayName()}", LogLevel.Important);
+                    player.SwitchPlatform(captured);
+                    buildAccount();
+                };
+
+                row.Add(button);
+            }
+
+            host.Add(row);
+        }
+
+        /// <summary>网易云账号资料。会员等权益以官方 App 为准，这里只展示身份与退出登录。</summary>
+        private void buildNetEaseProfile(FillFlowContainer host)
+        {
+            var avatar = new OnlineSprite(player.OnlineTextures)
+            {
+                Width = 96,
+                Height = 96,
+                Colour = Color4.White,
+            };
+
+            var nicknameText = new SpriteText
+            {
+                Text = "加载中…",
+                Font = OsuFont.GetFont(size: 24, weight: FontWeight.Bold),
+            };
+
+            var idText = new SpriteText
+            {
+                Text = $"网易云用户 ID：{player.LoginUserId}",
+                Font = OsuFont.GetFont(size: 18),
+                Colour = Color4.LightGray,
+            };
+
+            var detailText = new SpriteText
+            {
+                Text = "资料查询中…",
+                Font = OsuFont.GetFont(size: 18),
+                Colour = Color4.LightGray,
+            };
+
+            var logoutButton = new OsuPlayerButton
+            {
+                Width = 160,
+                Height = 38,
+                Text = "退出网易云账号",
+            };
+
+            host.Add(new FillFlowContainer
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 12),
+                Children = new Drawable[]
+                {
+                    new FillFlowContainer
+                    {
+                        RelativeSizeAxes = Axes.X,
+                        AutoSizeAxes = Axes.Y,
+                        Direction = FillDirection.Horizontal,
+                        Spacing = new Vector2(16, 0),
+                        Children = new Drawable[]
+                        {
+                            new Container
+                            {
+                                Width = 96,
+                                Height = 96,
+                                Child = avatar,
+                            },
+                            new FillFlowContainer
+                            {
+                                AutoSizeAxes = Axes.Both,
+                                Direction = FillDirection.Vertical,
+                                Spacing = new Vector2(0, 6),
+                                Children = new Drawable[] { nicknameText, idText, detailText },
+                            },
+                        },
+                    },
+                    loginHint("网易云账号与酷狗账号相互独立；会员曲目需要该账号自身拥有网易云会员权益。"),
+                    loginHint("歌单与收藏的账号级管理请在网易云音乐 App 内进行；本应用只做登录与在线播放。"),
+                    logoutButton,
+                },
+            });
+
+            logoutButton.Action = () =>
+            {
+                AppLog.Ui.Add("退出网易云账号", LogLevel.Important);
+                player.Logout();
+                buildAccount();
+            };
+
+            loadProfile();
+
+            async void loadProfile()
+            {
+                try
+                {
+                    MusicPlayer.AccountProfile? profile = await player.GetProfileAsync();
+
+                    Scheduler.Add(() =>
+                    {
+                        // 面板可能已被切换平台/关闭，回来时先确认还是网易云且仍登录。
+                        if (player.ActivePlatform.Value != MusicPlatform.NetEase || !player.LoggedIn.Value)
+                            return;
+
+                        if (profile is null)
+                        {
+                            nicknameText.Text = "网易云用户";
+                            return;
+                        }
+
+                        nicknameText.Text = profile.Nickname;
+                        idText.Text = $"网易云用户 ID：{profile.UserId}";
+
+                        if (!string.IsNullOrEmpty(profile.AvatarUrl))
+                            avatar.SetUrl(profile.AvatarUrl);
+
+                        detailText.Text = $"性别：{profile.Gender}    生日：{profile.Birthday}    乐龄：{profile.MusicAge}";
+                    });
+                }
+                catch (Exception e)
+                {
+                    AppLog.Ui.Add($"网易云资料加载失败：{e.Message}", LogLevel.Error, e);
+
+                    Scheduler.Add(() =>
+                    {
+                        if (player.ActivePlatform.Value == MusicPlatform.NetEase)
+                            detailText.Text = "资料加载失败";
+                    });
+                }
+            }
+        }
+
         private void buildAccount()
         {
             // 其它面板都会先清空；这里以前漏了，导致登录成功后账号信息被追加在二维码下面、
             // 二维码一直留在界面上。
             contentHost.Clear();
 
+            // 切换账号/平台时停掉仍在后台跑的二维码轮询，避免用旧 key 继续请求。
+            stopQrPolling();
+            stopWeChatPolling();
+
+            // 平台选择器 + 登录/资料必须放在同一个纵向流里：contentHost 是普通 Container，
+            // 直接加两个子项会重叠。
+            var root = new FillFlowContainer
+            {
+                RelativeSizeAxes = Axes.X,
+                AutoSizeAxes = Axes.Y,
+                Direction = FillDirection.Vertical,
+                Spacing = new Vector2(0, 16),
+            };
+
+            contentHost.Add(root);
+
+            addPlatformSelector(root);
+
             if (!player.LoggedIn.Value)
             {
-                buildLoginPanel();
+                buildLoginPanel(root);
+                return;
+            }
+
+            if (player.ActivePlatform.Value == MusicPlatform.NetEase)
+            {
+                buildNetEaseProfile(root);
                 return;
             }
 
@@ -1733,7 +1928,7 @@ namespace OsuPlayer.Game.Screens.Components
                     Text = "退出登录",
                 };
 
-                contentHost.Add(new FillFlowContainer
+                root.Add(new FillFlowContainer
                 {
                     RelativeSizeAxes = Axes.X,
                     AutoSizeAxes = Axes.Y,
@@ -1852,8 +2047,25 @@ namespace OsuPlayer.Game.Screens.Components
         /// 未登录时的面板：上面一排登录方式，下面按选择切换表单。
         /// 除「酷狗扫码」外的几种都对齐 EchoMusic 的登录模块（验证码 / 账号密码 / 微信 / token 快速登录）。
         /// </summary>
-        private void buildLoginPanel()
+        private void buildLoginPanel(FillFlowContainer host)
         {
+            // 网易云目前只提供扫码登录，直接给二维码，不显示酷狗那排登录方式。
+            if (player.ActivePlatform.Value == MusicPlatform.NetEase)
+            {
+                var netEaseHost = new FillFlowContainer
+                {
+                    RelativeSizeAxes = Axes.X,
+                    AutoSizeAxes = Axes.Y,
+                    Direction = FillDirection.Vertical,
+                    Spacing = new Vector2(0, 12),
+                };
+
+                host.Add(netEaseHost);
+                netEaseHost.Add(loginHint("网易云账号与酷狗账号相互独立；本应用仅支持扫码登录。"));
+                buildQrLoginForm(netEaseHost);
+                return;
+            }
+
             var methodRow = new FillFlowContainer
             {
                 RelativeSizeAxes = Axes.X,
@@ -1870,7 +2082,7 @@ namespace OsuPlayer.Game.Screens.Components
                 Spacing = new Vector2(0, 12),
             };
 
-            contentHost.Add(new FillFlowContainer
+            host.Add(new FillFlowContainer
             {
                 RelativeSizeAxes = Axes.X,
                 AutoSizeAxes = Axes.Y,
@@ -1939,12 +2151,12 @@ namespace OsuPlayer.Game.Screens.Components
             select("qrcode");
         }
 
-        /// <summary>酷狗 App 扫码登录（原本的唯一入口）。</summary>
+        /// <summary>扫码登录（当前平台由账号面板顶部的平台选择器决定）。</summary>
         private void buildQrLoginForm(FillFlowContainer host)
         {
             var statusText = new SpriteText
             {
-                Text = "请使用酷狗音乐 App 扫码登录",
+                Text = $"请使用{player.ActivePlatform.Value.DisplayName()} App 扫码登录",
                 Font = OsuFont.GetFont(size: 20),
                 Colour = Color4.LightGray,
             };
@@ -2170,6 +2382,8 @@ namespace OsuPlayer.Game.Screens.Components
             Text = text,
             Font = OsuFont.GetFont(size: 16),
             Colour = Color4.LightGray,
+            // 宽度跟随面板（高度由 SpriteText 按文本自动撑开）：长提示才会在面板内换行，而不是溢出到面板外。
+            RelativeSizeAxes = Axes.X,
         };
 
         private static OsuPlayerButton loginAction(string text, float width = 130) => new OsuPlayerButton
@@ -2202,7 +2416,7 @@ namespace OsuPlayer.Game.Screens.Components
                 (string key, string qrImage) = await player.CreateQrAsync();
                 qrKey = key;
                 qrSprite.SetUrl(qrImage);
-                statusText.Text = "请使用酷狗音乐 App 扫码登录";
+                statusText.Text = $"请使用{player.ActivePlatform.Value.DisplayName()} App 扫码登录";
             }
             catch (Exception e)
             {

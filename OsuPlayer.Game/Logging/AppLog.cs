@@ -19,6 +19,7 @@ namespace OsuPlayer.Game.Logging
         public static readonly Logger Ui = Logger.GetLogger("ui");
         public static readonly Logger Net = Logger.GetLogger("network");
         public static readonly Logger Api = Logger.GetLogger("kugou");
+        public static readonly Logger NetEase = Logger.GetLogger("netease");
         public static readonly Logger Player = Logger.GetLogger("player");
         public static readonly Logger Beat = Logger.GetLogger("beat");
 

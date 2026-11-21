@@ -63,6 +63,12 @@ namespace OsuPlayer.Game
 
         private readonly MusicBeatSyncProvider beatSyncProvider = new MusicBeatSyncProvider();
 
+        /// <summary>
+        /// 命令行训练/特征导出时推给 <see cref="TrainingStatusScreen"/> 的进度对象：后台任务写，
+        /// 界面每 250ms 读一次。放在这里而不是 Screen 里，是因为任务在屏幕加载完成前就已启动。
+        /// </summary>
+        private readonly TrainingProgress trainingProgress = new();
+
         private ScreenStack screenStack = null!;
 
         /// <summary>
@@ -83,6 +89,18 @@ namespace OsuPlayer.Game
         /// 并发过高会在部分机器上撞到解码失败；核数足够时可显式调高。报告会记录实际线程数与耗时。
         /// </summary>
         private readonly int trainingThreads = 1;
+
+        /// <summary>
+        /// 评测并发线程数（<c>--eval-threads &lt;n&gt;</c>）。默认按核数自动取 核数-4（20 核 → 16），
+        /// 与训练一样并行解码多首歌曲；可用参数显式覆盖。
+        /// </summary>
+        private readonly int evalThreads = Math.Max(1, Environment.ProcessorCount - 4);
+
+        /// <summary>
+        /// 特征导出并发线程数（<c>--export-threads &lt;n&gt;</c>）。默认 核数-4；
+        /// 导出手动 timing 训练集时由 <c>training/sync_user.py</c> 传入。
+        /// </summary>
+        private readonly int exportThreads = Math.Max(1, Environment.ProcessorCount - 4);
 
         private readonly string? kiaiExportDirectory;
 
@@ -168,6 +186,18 @@ namespace OsuPlayer.Game
                 else if (args[i].StartsWith("--train-threads=", StringComparison.Ordinal)
                          && int.TryParse(args[i]["--train-threads=".Length..], out int inlineThreads))
                     trainingThreads = Math.Max(1, inlineThreads);
+                else if (args[i] == "--eval-threads" && i + 1 < args.Length
+                         && int.TryParse(args[i + 1], out int evalCount))
+                    evalThreads = Math.Max(1, evalCount);
+                else if (args[i].StartsWith("--eval-threads=", StringComparison.Ordinal)
+                         && int.TryParse(args[i]["--eval-threads=".Length..], out int inlineEvalThreads))
+                    evalThreads = Math.Max(1, inlineEvalThreads);
+                else if (args[i] == "--export-threads" && i + 1 < args.Length
+                         && int.TryParse(args[i + 1], out int exportCount))
+                    exportThreads = Math.Max(1, exportCount);
+                else if (args[i].StartsWith("--export-threads=", StringComparison.Ordinal)
+                         && int.TryParse(args[i]["--export-threads=".Length..], out int inlineExportThreads))
+                    exportThreads = Math.Max(1, inlineExportThreads);
                 else if (args[i] == "--export-kiai-data" && i + 1 < args.Length)
                     kiaiExportDirectory = args[i + 1];
                 else if (args[i].StartsWith("--export-kiai-data=", StringComparison.Ordinal))
@@ -302,19 +332,27 @@ namespace OsuPlayer.Game
 
             if (beatmapFeatureDirectory is not null && beatmapFeatureOutputPath is not null)
             {
-                _ = runBeatmapFeatureExportAsync();
+                runWithStatus("谱面 BPM 特征导出失败",
+                    p => BeatmapTraining.ExportBeatmapBpmFeaturesAsync(
+                        beatmapFeatureDirectory!, beatmapFeatureOutputPath!, trainingThreads, p),
+                    "正在导出谱面 BPM 特征…", "导出完成，正在退出…");
                 return;
             }
 
             if (bpmFeatureManifestPath is not null && bpmFeatureOutputPath is not null)
             {
-                _ = runBpmFeatureExportAsync();
+                runWithStatus("BPM 原生特征导出失败",
+                    p => BeatmapTraining.ExportBpmFeaturesAsync(bpmFeatureManifestPath!, bpmFeatureOutputPath!,
+                        exportThreads, p),
+                    "正在导出 BPM 特征…", "导出完成，正在退出…");
                 return;
             }
 
             if (bpmUserEvalManifestPath is not null && bpmUserEvalReportPath is not null)
             {
-                _ = runUserBpmEvalAsync();
+                runWithStatus("用户 BPM 端到端评测失败",
+                    p => BeatmapTraining.EvaluateUserBpmAsync(bpmUserEvalManifestPath!, bpmUserEvalReportPath!, evalThreads, p),
+                    "正在评测 BPM 模型…", "评测完成，正在退出…");
                 return;
             }
 
@@ -326,7 +364,11 @@ namespace OsuPlayer.Game
 
             if (bpmEvalDirectory is not null)
             {
-                _ = runBpmEvalAsync();
+                runWithStatus("BPM 评测失败",
+                    p => BeatmapTraining.EvaluateBpmAsync(
+                        bpmEvalDirectory!, bpmLabelDirectory,
+                        Path.Combine(Environment.CurrentDirectory, "bpm-eval-report.txt"), evalThreads, p),
+                    "正在评测 BPM 模型…", "评测完成，正在退出…");
                 return;
             }
 
@@ -337,7 +379,12 @@ namespace OsuPlayer.Game
                 else if (dumpBeatTrainDirectory is not null || dumpBeatEvalDirectory is not null)
                     _ = runBeatDumpAsync();
                 else
-                    _ = runTrainingAsync();
+                {
+                    // 以前这里直接 return，窗口既没推 Screen 也没画东西，整个训练过程是一块全黑；
+                    // 现在推一张状态卡显示进度、ETA 与机器负载。
+                    runWithStatus("训练失败",
+                        p => BeatmapTraining.RunAsync(trainingDirectory!, trainingReportPath!, trainingOnnx, trainingThreads, p));
+                }
 
                 return;
             }
@@ -345,21 +392,40 @@ namespace OsuPlayer.Game
             screenStack.Push(new MainScreen());
         }
 
-        private async Task runTrainingAsync()
+        /// <summary>
+        /// 批量任务统一外壳（训练 / 评测 / 特征导出）：推状态卡、跑任务，成功失败都先把结果留在卡上再退出。
+        /// 这些分支以前都是「什么都不画、跑完就关」，看起来就是一块全黑。
+        /// </summary>
+        private void runWithStatus(string failureLabel, Func<TrainingProgress, Task<string>> work,
+                                   string title = "正在训练 BPM 检测模型…", string doneTitle = "训练完成，正在退出…")
         {
+            screenStack.Push(new TrainingStatusScreen(trainingProgress, title, doneTitle));
+            _ = runBatchAsync(failureLabel, work);
+        }
+
+        private async Task runBatchAsync(string failureLabel, Func<TrainingProgress, Task<string>> work)
+        {
+            bool success = false;
+
             try
             {
-                string report = await BeatmapTraining.RunAsync(trainingDirectory!, trainingReportPath!, trainingOnnx, trainingThreads).ConfigureAwait(false);
+                string report = await work(trainingProgress).ConfigureAwait(false);
                 Console.WriteLine(report);
                 Console.Out.Flush();
+                success = true;
             }
             catch (Exception e)
             {
-                Console.Error.WriteLine($"训练失败：{e}");
+                trainingProgress.Fail(e.Message);
+                Console.Error.WriteLine($"{failureLabel}：{e}");
                 Console.Error.Flush();
             }
             finally
             {
+                trainingProgress.Finish();
+
+                // 停留时间够读完最后一屏：成功 2.5s（看到 302/302），失败 6s（看清原因）。
+                await Task.Delay(success ? 2500 : 6000).ConfigureAwait(false);
                 Schedule(() => Host.Exit());
             }
         }
@@ -518,87 +584,6 @@ namespace OsuPlayer.Game
             catch (Exception e)
             {
                 Console.Error.WriteLine($"单曲 BPM 推理失败：{e}");
-                Console.Error.Flush();
-            }
-            finally
-            {
-                Schedule(() => Host.Exit());
-            }
-        }
-
-        private async Task runBpmEvalAsync()
-        {
-            try
-            {
-                string report = await BeatmapTraining.EvaluateBpmAsync(
-                    bpmEvalDirectory!, bpmLabelDirectory,
-                    Path.Combine(Environment.CurrentDirectory, "bpm-eval-report.txt")).ConfigureAwait(false);
-                Console.WriteLine(report);
-                Console.Out.Flush();
-            }
-            catch (Exception e)
-            {
-                Console.Error.WriteLine($"BPM 评测失败：{e}");
-                Console.Error.Flush();
-            }
-            finally
-            {
-                Schedule(() => Host.Exit());
-            }
-        }
-
-        private async Task runBpmFeatureExportAsync()
-        {
-            try
-            {
-                string summary = await BeatmapTraining.ExportBpmFeaturesAsync(
-                    bpmFeatureManifestPath!, bpmFeatureOutputPath!).ConfigureAwait(false);
-                Console.WriteLine(summary);
-                Console.Out.Flush();
-            }
-            catch (Exception e)
-            {
-                Console.Error.WriteLine($"BPM 原生特征导出失败：{e}");
-                Console.Error.Flush();
-            }
-            finally
-            {
-                Schedule(() => Host.Exit());
-            }
-        }
-
-        private async Task runBeatmapFeatureExportAsync()
-        {
-            try
-            {
-                string summary = await BeatmapTraining.ExportBeatmapBpmFeaturesAsync(
-                    beatmapFeatureDirectory!, beatmapFeatureOutputPath!, trainingThreads).ConfigureAwait(false);
-                Console.WriteLine(summary);
-                Console.Out.Flush();
-            }
-            catch (Exception e)
-            {
-                Console.Error.WriteLine($"谱面 BPM 特征导出失败：{e}");
-                Console.Error.Flush();
-            }
-            finally
-            {
-                Schedule(() => Host.Exit());
-            }
-        }
-
-        private async Task runUserBpmEvalAsync()
-        {
-            try
-            {
-                string report = await BeatmapTraining.EvaluateUserBpmAsync(
-                    bpmUserEvalManifestPath!, bpmUserEvalReportPath!).ConfigureAwait(false);
-                Console.WriteLine(report);
-                Console.Out.Flush();
-            }
-            catch (Exception e)
-            {
-                Console.Error.WriteLine($"用户 BPM 端到端评测失败：{e}");
                 Console.Error.Flush();
             }
             finally

@@ -113,6 +113,12 @@ namespace OsuPlayer.Game.Screens.Components
             };
 
             player.LoggedIn.BindValueChanged(_ => updateAccount(), true);
+            player.ActivePlatform.BindValueChanged(_ =>
+            {
+                // 头像属于账号：换平台后必须丢掉上一个平台的头像缓存，否则会一直显示错平台的资料。
+                accountAvatarUrl = null;
+                updateAccount();
+            }, true);
         }
 
         /// <summary>
@@ -146,7 +152,7 @@ namespace OsuPlayer.Game.Screens.Components
                 return;
             }
 
-            accountButton.TooltipText = $"账号 {player.LoginUserId}";
+            accountButton.TooltipText = $"{player.ActivePlatform.Value.DisplayName()}账号 {player.LoginUserId}";
 
             if (!string.IsNullOrEmpty(accountAvatarUrl))
             {

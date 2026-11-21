@@ -20,5 +20,8 @@
          作为与频谱通量完全独立的第二意见。自带 win-x64 原生库，约 +30MB 发布体积；
          CPU EP + FP32（i7-7500U 无 VNNI，int8 量化没有收益）。 -->
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
+    <!-- 训练状态卡的 CPU 温度读数：Windows 唯一的免驱动途径是 WMI
+         (root\WMI:MSAcpi_ThermalZoneTemperature)。System.Management 是它的托管封装。 -->
+    <PackageReference Include="System.Management" Version="10.0.9" />
   </ItemGroup>
 </Project>

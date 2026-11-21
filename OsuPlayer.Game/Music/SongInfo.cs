@@ -35,6 +35,12 @@ namespace OsuPlayer.Game.Music
         public SongFee Fee { get; init; } = SongFee.Unknown;
 
         /// <summary>
+        /// 曲目所属平台。队列可以混排两个平台的歌，播放地址按这个字段选择对应的接口；
+        /// 旧存档没有这个字段，读取时按酷狗处理。
+        /// </summary>
+        public MusicPlatform Platform { get; init; } = MusicPlatform.KuGou;
+
+        /// <summary>
         /// 谱面自带的时间轴（仅从 .osz/.olz 里的 .osu 解析得到）。有值时播放直接用作者写好的
         /// BPM / 首拍 / kiai，不再做音频节拍分析。
         /// </summary>

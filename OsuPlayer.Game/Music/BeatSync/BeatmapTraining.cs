@@ -379,12 +379,14 @@ namespace OsuPlayer.Game.Music.BeatSync
         /// </param>
         /// <param name="ct">取消令牌。</param>
         public static async Task<string> RunAsync(string directory, string reportPath, bool useOnnx = false,
-                                                 int parallelism = 1, CancellationToken ct = default)
+                                                 int parallelism = 1, TrainingProgress? progress = null,
+                                                 CancellationToken ct = default)
         {
             string[] maps = Directory.GetFiles(directory, "*.osz");
             Array.Sort(maps, StringComparer.OrdinalIgnoreCase);
 
             parallelism = Math.Max(1, parallelism);
+            progress?.Begin(maps.Length, parallelism, "分析谱面");
             var totalWatch = System.Diagnostics.Stopwatch.StartNew();
 
             var sb = new StringBuilder();
@@ -421,6 +423,7 @@ namespace OsuPlayer.Game.Music.BeatSync
                         if (truth.TempoPoints.Count == 0 || audio.Length == 0)
                         {
                             lines[index] = $"{name}\t跳过（没有红线或没有音频）";
+                            progress?.SongCompleted(true);
                             return;
                         }
 
@@ -437,10 +440,12 @@ namespace OsuPlayer.Game.Music.BeatSync
 
                         collected[index] = result;
                         lines[index] = format(result) + $"\t耗时 {watch.ElapsedMilliseconds}ms";
+                        progress?.SongCompleted();
                     }
                     catch (Exception e)
                     {
                         lines[index] = $"{name}\t失败：{e.Message}\t耗时 {watch.ElapsedMilliseconds}ms";
+                        progress?.SongCompleted();
                         AppLog.Beat.Add($"训练：{name} 分析失败：{e.Message}", LogLevel.Error, e);
                     }
                 });
@@ -451,6 +456,8 @@ namespace OsuPlayer.Game.Music.BeatSync
                 AppLog.Beat.Add($"批量评测中断（已完成 {collected.Count(c => c is not null)}/{maps.Length} 张），"
                                 + $"仍写出部分报告：{e.Message}", LogLevel.Error, e);
             }
+
+            progress?.SetStage("生成报告");
 
             foreach (string line in lines)
             {
@@ -472,6 +479,7 @@ namespace OsuPlayer.Game.Music.BeatSync
 
             File.WriteAllText(reportPath, sb.ToString());
             AppLog.Beat.Add($"训练报告已写入：{reportPath}", LogLevel.Important);
+            progress?.Finish();
 
             return sb.ToString();
         }
@@ -526,12 +534,17 @@ namespace OsuPlayer.Game.Music.BeatSync
         /// 说明移植有偏差，必须先修口径再看模型。
         /// </summary>
         public static async Task<string> EvaluateBpmAsync(string audioDirectory, string? labelDirectory,
-                                                          string reportPath, CancellationToken ct = default)
+                                                          string reportPath, int parallelism = 0,
+                                                          TrainingProgress? progress = null,
+                                                          CancellationToken ct = default)
         {
             string[] files = Directory.GetFiles(audioDirectory, "*.wav", SearchOption.AllDirectories);
             Array.Sort(files, StringComparer.OrdinalIgnoreCase);
 
-            int parallelism = Math.Max(1, Environment.ProcessorCount / 2);
+            if (parallelism <= 0)
+                parallelism = Math.Max(1, Environment.ProcessorCount / 2);
+
+            progress?.Begin(files.Length, parallelism, "评测 BPM");
             var lines = new string[files.Length];
             var collected = new List<BpmEvalRow>();
 
@@ -559,6 +572,7 @@ namespace OsuPlayer.Game.Music.BeatSync
                     if (labelPath is null)
                     {
                         lines[index] = $"{name}\t跳过（无 .bpm 真值）";
+                        progress?.SongCompleted(true);
                         return;
                     }
 
@@ -586,10 +600,12 @@ namespace OsuPlayer.Game.Music.BeatSync
 
                     lines[index] = $"{name}\t真值 {truth:0.##}\t基线 {baseline:0.##}\t"
                                    + $"模型 {(ok ? modelBpm.ToString("0.##") : "-")}\t{watch.ElapsedMilliseconds}ms";
+                    progress?.SongCompleted();
                 }
                 catch (Exception e)
                 {
                     lines[index] = $"{name}\t失败：{e.Message}";
+                    progress?.SongCompleted(true);
                     AppLog.Beat.Add($"BPM 评测 {name} 失败：{e.Message}", LogLevel.Error, e);
                 }
             });
@@ -611,8 +627,10 @@ namespace OsuPlayer.Game.Music.BeatSync
             sb.AppendLine();
             sb.AppendLine(formatBpmSummary(collected));
 
+            progress?.SetStage("生成报告");
             File.WriteAllText(reportPath, sb.ToString());
             AppLog.Beat.Add($"BPM 评测报告已写入：{reportPath}", LogLevel.Important);
+            progress?.Finish();
 
             return sb.ToString();
         }
@@ -628,16 +646,31 @@ namespace OsuPlayer.Game.Music.BeatSync
         /// label = |候选 - 真值| ≤ 4%·真值。
         /// </summary>
         public static async Task<string> ExportBpmFeaturesAsync(string manifestPath, string outputPath,
+                                                                 int parallelism = 1,
+                                                                 TrainingProgress? progress = null,
                                                                  CancellationToken ct = default)
         {
             using JsonDocument document = JsonDocument.Parse(await File.ReadAllTextAsync(manifestPath, ct).ConfigureAwait(false));
-            JsonElement songs = document.RootElement.GetProperty("songs");
-            var rows = new StringBuilder();
-            int written = 0, skipped = 0, candidateRows = 0;
 
-            foreach (JsonElement song in songs.EnumerateArray())
+            // 先把 JsonElement 抄进 List：JsonElement 指向同一个 JsonDocument，多线程只读虽然可行，
+            // 但并发枚举不安全，抄一次最省事。
+            List<JsonElement> songs = document.RootElement.GetProperty("songs").EnumerateArray().ToList();
+
+            // 每首一块，最后按清单顺序拼接，保证 CSV 行的顺序与单线程时完全一致。
+            var chunks = new string?[songs.Count];
+            int written = 0, skipped = 0;
+            long candidateRows = 0;
+
+            parallelism = Math.Max(1, parallelism);
+            progress?.Begin(songs.Count, parallelism, "提取 BPM 特征");
+
+            await Parallel.ForEachAsync(Enumerable.Range(0, songs.Count), new ParallelOptions
             {
-                ct.ThrowIfCancellationRequested();
+                MaxDegreeOfParallelism = parallelism,
+                CancellationToken = ct,
+            }, async (index, _) =>
+            {
+                JsonElement song = songs[index];
 
                 string id = song.GetProperty("id").GetString() ?? string.Empty;
                 string name = song.TryGetProperty("name", out JsonElement nameElement) ? nameElement.GetString() ?? id : id;
@@ -645,14 +678,16 @@ namespace OsuPlayer.Game.Music.BeatSync
 
                 if (song.TryGetProperty("variable_tempo", out JsonElement variable) && variable.GetBoolean())
                 {
-                    skipped++;
-                    continue;
+                    Interlocked.Increment(ref skipped);
+                    progress?.SongCompleted(true);
+                    return;
                 }
 
                 if (!song.TryGetProperty("audio", out JsonElement audioElement))
                 {
-                    skipped++;
-                    continue;
+                    Interlocked.Increment(ref skipped);
+                    progress?.SongCompleted(true);
+                    return;
                 }
 
                 string status = audioElement.TryGetProperty("status", out JsonElement statusElement)
@@ -664,13 +699,14 @@ namespace OsuPlayer.Game.Music.BeatSync
 
                 if (status is not ("downloaded" or "local") || audioPath is null || !File.Exists(audioPath))
                 {
-                    skipped++;
-                    continue;
+                    Interlocked.Increment(ref skipped);
+                    progress?.SongCompleted(true);
+                    return;
                 }
 
                 try
                 {
-                    byte[] audio = await File.ReadAllBytesAsync(audioPath, ct).ConfigureAwait(false);
+                    byte[] audio = await File.ReadAllBytesAsync(audioPath, _).ConfigureAwait(false);
                     (float[] samples, int sampleRate) = BeatAnalyser.DecodeMonoSamples(audio);
 
                     BpmFeatureBuilder.RhythmFeatures rhythm = BpmFeatureBuilder.Analyse(samples, sampleRate);
@@ -679,11 +715,14 @@ namespace OsuPlayer.Game.Music.BeatSync
 
                     if (candidates.Count == 0)
                     {
-                        skipped++;
-                        continue;
+                        Interlocked.Increment(ref skipped);
+                        progress?.SongCompleted(true);
+                        return;
                     }
 
                     float[] features = BpmFeatureBuilder.Features(salience, candidates, rhythm);
+
+                    var rows = new StringBuilder();
 
                     for (int i = 0; i < candidates.Count; i++)
                     {
@@ -699,17 +738,22 @@ namespace OsuPlayer.Game.Music.BeatSync
                             rows.Append(',').Append(FormatInvariant(features[i * BpmFeatureBuilder.FeatureCount + k]));
 
                         rows.AppendLine();
-                        candidateRows++;
                     }
 
-                    written++;
+                    chunks[index] = rows.ToString();
+                    Interlocked.Increment(ref written);
+                    Interlocked.Add(ref candidateRows, candidates.Count);
+                    progress?.SongCompleted();
                 }
                 catch (Exception e)
                 {
-                    skipped++;
+                    Interlocked.Increment(ref skipped);
+                    progress?.SongCompleted(true);
                     AppLog.Beat.Add($"BPM 原生特征导出：{name} 失败：{e.Message}", LogLevel.Error, e);
                 }
-            }
+            });
+
+            progress?.SetStage("写出 CSV");
 
             var sb = new StringBuilder();
             sb.AppendLine("# bpmfeat v1");
@@ -719,7 +763,12 @@ namespace OsuPlayer.Game.Music.BeatSync
             sb.AppendLine("# features=" + string.Join(",", Enumerable.Range(0, BpmFeatureBuilder.FeatureCount).Select(i => $"f{i}")));
             sb.AppendLine("song_id,song_name,truth_bpm,candidate_index,candidate_bpm,label,"
                           + string.Join(",", Enumerable.Range(0, BpmFeatureBuilder.FeatureCount).Select(i => $"f{i}")));
-            sb.Append(rows);
+
+            foreach (string? chunk in chunks)
+            {
+                if (chunk is not null)
+                    sb.Append(chunk);
+            }
 
             string? directory = Path.GetDirectoryName(Path.GetFullPath(outputPath));
 
@@ -728,8 +777,10 @@ namespace OsuPlayer.Game.Music.BeatSync
 
             await File.WriteAllTextAsync(outputPath, sb.ToString(), ct).ConfigureAwait(false);
 
-            string summary = $"BPM 原生特征导出完成：{written} 首 / {candidateRows} 条候选 → {outputPath}（跳过 {skipped} 首）。";
+            string summary = $"BPM 原生特征导出完成：{written} 首 / {candidateRows} 条候选 → {outputPath}"
+                             + $"（跳过 {skipped} 首，{parallelism} 线程）。";
             AppLog.Beat.Add(summary, LogLevel.Important);
+            progress?.Finish();
             return summary;
         }
 
@@ -743,12 +794,14 @@ namespace OsuPlayer.Game.Music.BeatSync
         /// 变速谱面（首尾 BPM 差 &gt; 4%）没有单一全局真值，跳过。
         /// </summary>
         public static async Task<string> ExportBeatmapBpmFeaturesAsync(string mapDirectory, string outputPath,
-                                                                       int parallelism = 1, CancellationToken ct = default)
+                                                                       int parallelism = 1, TrainingProgress? progress = null,
+                                                                       CancellationToken ct = default)
         {
             string[] maps = Directory.GetFiles(mapDirectory, "*.osz");
             Array.Sort(maps, StringComparer.OrdinalIgnoreCase);
 
             parallelism = Math.Max(1, parallelism);
+            progress?.Begin(maps.Length, parallelism, "提取 BPM 特征");
             var chunks = new string[maps.Length];
             int written = 0, skipped = 0, candidateRows = 0;
 
@@ -772,6 +825,7 @@ namespace OsuPlayer.Game.Music.BeatSync
                     if (reds.Count == 0 || audio.Length == 0)
                     {
                         Interlocked.Increment(ref skipped);
+                        progress?.SongCompleted(true);
                         return;
                     }
 
@@ -781,6 +835,7 @@ namespace OsuPlayer.Game.Music.BeatSync
                     if (minBpm <= 0 || maxBpm / minBpm > 1.04)
                     {
                         Interlocked.Increment(ref skipped);
+                        progress?.SongCompleted(true);
                         return;
                     }
 
@@ -794,6 +849,7 @@ namespace OsuPlayer.Game.Music.BeatSync
                     if (candidates.Count == 0)
                     {
                         Interlocked.Increment(ref skipped);
+                        progress?.SongCompleted(true);
                         return;
                     }
 
@@ -820,10 +876,12 @@ namespace OsuPlayer.Game.Music.BeatSync
 
                     chunks[index] = sb.ToString();
                     Interlocked.Increment(ref written);
+                    progress?.SongCompleted();
                 }
                 catch (Exception e)
                 {
                     Interlocked.Increment(ref skipped);
+                    progress?.SongCompleted(true);
                     AppLog.Beat.Add($"谱面 BPM 特征导出：{name} 失败：{e.Message}", LogLevel.Error, e);
                 }
             });
@@ -848,11 +906,14 @@ namespace OsuPlayer.Game.Music.BeatSync
             if (!string.IsNullOrEmpty(directory))
                 Directory.CreateDirectory(directory);
 
+            progress?.SetStage("写出 CSV");
+
             await File.WriteAllTextAsync(outputPath, header.ToString(), ct).ConfigureAwait(false);
 
             string summary = $"谱面 BPM 特征导出完成：{written} 首 / {candidateRows} 条候选 → {outputPath}"
                              + $"（跳过 {skipped} 首：变速或无红线）。";
             AppLog.Beat.Add(summary, LogLevel.Important);
+            progress?.Finish();
             return summary;
         }
 
@@ -1029,95 +1090,132 @@ namespace OsuPlayer.Game.Music.BeatSync
         /// `模型` 是最终结果；两者对比能直接看出回灌模型是否真的在 C# 端生效。
         /// </summary>
         public static async Task<string> EvaluateUserBpmAsync(string manifestPath, string reportPath,
+                                                                int parallelism = 1,
+                                                                TrainingProgress? progress = null,
                                                                 CancellationToken ct = default)
         {
             using JsonDocument document = JsonDocument.Parse(await File.ReadAllTextAsync(manifestPath, ct).ConfigureAwait(false));
             JsonElement songs = document.RootElement.GetProperty("songs");
-            var lines = new List<string>();
-            int evaluated = 0, rawAcc1 = 0, modelAcc1 = 0, rawAcc2 = 0, modelAcc2 = 0;
-            int changed = 0, changedRight = 0, changedWrong = 0;
+
+            // 先把清单里要用到的字段抄成纯数据：JsonElement 指向同一个 JsonDocument，
+            // 多线程下只读虽然可行，但抄出来更便宜也更安全。
+            var items = new List<UserEvalSong>(songs.GetArrayLength());
 
             foreach (JsonElement song in songs.EnumerateArray())
             {
-                ct.ThrowIfCancellationRequested();
-
                 string name = song.TryGetProperty("name", out JsonElement nameElement) && !string.IsNullOrWhiteSpace(nameElement.GetString())
                     ? nameElement.GetString()!
                     : song.GetProperty("id").GetString() ?? "?";
                 double truth = song.GetProperty("bpm").GetDouble();
+                bool variableTempo = song.TryGetProperty("variable_tempo", out JsonElement variable) && variable.GetBoolean();
 
-                if (song.TryGetProperty("variable_tempo", out JsonElement variable) && variable.GetBoolean())
+                string status = string.Empty;
+                string? audioPath = null;
+
+                if (song.TryGetProperty("audio", out JsonElement audioElement))
                 {
-                    lines.Add($"{name}\t跳过（多 BPM）");
-                    continue;
+                    status = audioElement.TryGetProperty("status", out JsonElement statusElement)
+                        ? statusElement.GetString() ?? string.Empty
+                        : string.Empty;
+                    audioPath = audioElement.TryGetProperty("path", out JsonElement pathElement)
+                        ? pathElement.GetString()
+                        : null;
                 }
 
-                if (!song.TryGetProperty("audio", out JsonElement audioElement))
-                    continue;
-
-                string status = audioElement.TryGetProperty("status", out JsonElement statusElement)
-                    ? statusElement.GetString() ?? string.Empty
-                    : string.Empty;
-                string? audioPath = audioElement.TryGetProperty("path", out JsonElement pathElement)
-                    ? pathElement.GetString()
+                double? firstBeat = song.TryGetProperty("first_beat_ms", out JsonElement firstElement)
+                                    && firstElement.TryGetDouble(out double firstBeatValue)
+                    ? firstBeatValue
                     : null;
 
-                if (status is not ("downloaded" or "local") || audioPath is null || !File.Exists(audioPath))
+                items.Add(new UserEvalSong(name, truth, variableTempo, status, audioPath, firstBeat));
+            }
+
+            var lines = new string?[items.Count];
+            int evaluated = 0, rawAcc1 = 0, modelAcc1 = 0, rawAcc2 = 0, modelAcc2 = 0;
+            int changed = 0, changedRight = 0, changedWrong = 0;
+
+            parallelism = Math.Max(1, parallelism);
+            progress?.Begin(items.Count, parallelism, "评测 BPM");
+
+            await Parallel.ForEachAsync(Enumerable.Range(0, items.Count), new ParallelOptions
+            {
+                MaxDegreeOfParallelism = parallelism,
+                CancellationToken = ct,
+            }, async (index, _) =>
+            {
+                UserEvalSong song = items[index];
+
+                if (song.VariableTempo)
                 {
-                    lines.Add($"{name}\t跳过（音频未就绪）");
-                    continue;
+                    lines[index] = $"{song.Name}\t跳过（多 BPM）";
+                    progress?.SongCompleted(true);
+                    return;
+                }
+
+                if (song.AudioStatus is not ("downloaded" or "local")
+                    || song.AudioPath is null || !File.Exists(song.AudioPath))
+                {
+                    lines[index] = $"{song.Name}\t跳过（音频未就绪）";
+                    progress?.SongCompleted(true);
+                    return;
                 }
 
                 try
                 {
-                    byte[] audio = await File.ReadAllBytesAsync(audioPath, ct).ConfigureAwait(false);
+                    byte[] audio = await File.ReadAllBytesAsync(song.AudioPath, _).ConfigureAwait(false);
                     BeatAnalysisDetails details = await new BeatAnalyser().AnalyseDetailedAsync(audio).ConfigureAwait(false);
 
                     double raw = details.RawBpm;
                     double model = details.Result.Bpm;
-                    bool rawOk = acc1(raw, truth);
-                    bool modelOk = acc1(model, truth);
+                    bool rawOk = acc1(raw, song.Truth);
+                    bool modelOk = acc1(model, song.Truth);
 
-                    evaluated++;
+                    Interlocked.Increment(ref evaluated);
 
                     if (rawOk)
-                        rawAcc1++;
+                        Interlocked.Increment(ref rawAcc1);
                     if (modelOk)
-                        modelAcc1++;
-                    if (acc2(raw, truth))
-                        rawAcc2++;
-                    if (acc2(model, truth))
-                        modelAcc2++;
+                        Interlocked.Increment(ref modelAcc1);
+                    if (acc2(raw, song.Truth))
+                        Interlocked.Increment(ref rawAcc2);
+                    if (acc2(model, song.Truth))
+                        Interlocked.Increment(ref modelAcc2);
 
                     if (Math.Abs(raw - model) > 0.5)
                     {
-                        changed++;
+                        Interlocked.Increment(ref changed);
 
                         if (modelOk && !rawOk)
-                            changedRight++;
+                            Interlocked.Increment(ref changedRight);
                         else if (!modelOk && rawOk)
-                            changedWrong++;
+                            Interlocked.Increment(ref changedWrong);
                     }
 
-                    lines.Add($"{name}\t真值 {truth:0.##}\t原生 {raw:0.##}\t模型 {model:0.##}"
-                              + $"\t{(modelOk ? "✓" : acc2(model, truth) ? "倍频" : "✗")}{phaseColumns(song, details, truth)}");
+                    lines[index] = $"{song.Name}\t真值 {song.Truth:0.##}\t原生 {raw:0.##}\t模型 {model:0.##}"
+                                   + $"\t{(modelOk ? "✓" : acc2(model, song.Truth) ? "倍频" : "✗")}"
+                                   + phaseColumns(song.FirstBeatMs, details, song.Truth);
+                    progress?.SongCompleted();
                 }
                 catch (Exception e)
                 {
-                    lines.Add($"{name}\t失败：{e.Message}");
-                    AppLog.Beat.Add($"用户 BPM 评测：{name} 失败：{e.Message}", LogLevel.Error, e);
+                    lines[index] = $"{song.Name}\t失败：{e.Message}";
+                    progress?.SongCompleted(true);
+                    AppLog.Beat.Add($"用户 BPM 评测：{song.Name} 失败：{e.Message}", LogLevel.Error, e);
                 }
-            }
+            });
 
             var sb = new StringBuilder();
             sb.AppendLine("# 用户手改 timing 的 C# 原生 BPM 端到端评测");
             sb.AppendLine($"# 清单：{manifestPath}");
             sb.AppendLine($"# BPM 层级模型：{(BpmMl.IsAvailable ? BpmMl.Status : "未安装（纯原生）")}");
-            sb.AppendLine($"# 曲目数：{evaluated}");
+            sb.AppendLine($"# 曲目数：{evaluated}（{parallelism} 线程）");
             sb.AppendLine();
 
-            foreach (string line in lines)
-                sb.AppendLine(line);
+            foreach (string? line in lines)
+            {
+                if (line is not null)
+                    sb.AppendLine(line);
+            }
 
             sb.AppendLine();
             sb.AppendLine("== 汇总 ==");
@@ -1140,23 +1238,27 @@ namespace OsuPlayer.Game.Music.BeatSync
             if (!string.IsNullOrEmpty(directory))
                 Directory.CreateDirectory(directory);
 
+            progress?.SetStage("生成报告");
             await File.WriteAllTextAsync(reportPath, sb.ToString(), ct).ConfigureAwait(false);
             AppLog.Beat.Add($"用户 BPM 评测报告已写入：{reportPath}", LogLevel.Important);
+            progress?.Finish();
             return sb.ToString();
         }
 
         private readonly record struct BpmEvalRow(string Name, double Truth, double Baseline, double Model,
                                                  long ElapsedMs, int Candidates);
 
+        /// <summary>评测前从清单抄出的纯数据行（避免多线程共用 JsonElement）。</summary>
+        private readonly record struct UserEvalSong(string Name, double Truth, bool VariableTempo,
+                                                    string AudioStatus, string? AudioPath, double? FirstBeatMs);
+
         /// <summary>
         /// 用户样本的相位诊断列：把检测到的首拍（已含 downbeat 锚点）与手改 timing 的首个红线按
         /// 拍长 / 小节长折叠，口径与谱面评估的 PhaseErrorMs / BarPhaseErrorMs 一致。
         /// </summary>
-        private static string phaseColumns(JsonElement song, BeatAnalysisDetails details, double truth)
+        private static string phaseColumns(double? firstBeatMs, BeatAnalysisDetails details, double truth)
         {
-            if (truth <= 0
-                || !song.TryGetProperty("first_beat_ms", out JsonElement firstElement)
-                || !firstElement.TryGetDouble(out double firstBeat))
+            if (truth <= 0 || firstBeatMs is not double firstBeat)
                 return string.Empty;
 
             double beatLength = 60000.0 / truth;

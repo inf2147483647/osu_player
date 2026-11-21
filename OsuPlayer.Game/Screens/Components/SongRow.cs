@@ -30,6 +30,10 @@ namespace OsuPlayer.Game.Screens.Components
         private static readonly Color4 vip_colour = new(255, 199, 64, 255);
         private static readonly Color4 paid_colour = new(236, 74, 74, 255);
 
+        /// <summary>播放历史里的平台标签：酷狗蓝、网易红。</summary>
+        private static readonly Color4 kugou_colour = new(64, 158, 255, 255);
+        private static readonly Color4 netease_colour = new(236, 74, 74, 255);
+
         private readonly SongInfo song;
         private Box hoverBg = null!;
         private Box? selectionBg;
@@ -129,7 +133,7 @@ namespace OsuPlayer.Game.Screens.Components
                     Direction = FillDirection.Horizontal,
                     Spacing = new Vector2(5, 0),
                     AutoSizeAxes = Axes.Both,
-                    Children = new Drawable[] { badgeText, nameText },
+                    Children = buildBadgeFlow(),
                 },
                 artistText,
                 new SpriteText
@@ -206,6 +210,27 @@ namespace OsuPlayer.Game.Screens.Components
             player.CurrentSong.BindValueChanged(_ => Schedule(updateActive), true);
             updateFeeBadge();
             updateSelectionVisual();
+        }
+
+        /// <summary>VIP/付费标识 → 平台标签 → 歌名。本地导入的文件不属于任何平台，不标来源。</summary>
+        private Drawable[] buildBadgeFlow()
+        {
+            var children = new List<Drawable> { badgeText };
+
+            if (!song.IsLocal)
+            {
+                bool netease = song.Platform == MusicPlatform.NetEase;
+
+                children.Add(new SpriteText
+                {
+                    Font = OsuFont.GetFont(size: 15, weight: FontWeight.Bold),
+                    Text = netease ? "网易" : "酷狗",
+                    Colour = netease ? netease_colour : kugou_colour,
+                });
+            }
+
+            children.Add(nameText);
+            return children.ToArray();
         }
 
         public void SetSelected(bool selected)

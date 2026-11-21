@@ -165,39 +165,61 @@ namespace OsuPlayer.Game.Net
                 throw new HttpRequestException("该资源刚刚下载失败，短时间内不再重试");
 
             var sw = Stopwatch.StartNew();
-            using var timeout = new CancellationTokenSource(image ? image_timeout : audio_timeout);
 
-            try
+            // 音频流在连接阶段偶发被系统/网络中断（典型是 IPv6 地址黑洞触发 6 秒连接超时），
+            // 但重连通常会立刻成功；一次失败就让整首歌播不了不值得。图片不做重试，避免拖慢列表。
+            int attempts = image ? 1 : 2;
+            Exception? lastError = null;
+
+            for (int attempt = 1; attempt <= attempts; attempt++)
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, name);
-                using HttpResponseMessage response = http.Send(request, HttpCompletionOption.ResponseContentRead, timeout.Token);
-                response.EnsureSuccessStatusCode();
+                using var timeout = new CancellationTokenSource(image ? image_timeout : audio_timeout);
 
-                using Stream content = response.Content.ReadAsStream(timeout.Token);
-                using var buffer = new MemoryStream();
-                content.CopyTo(buffer);
+                try
+                {
+                    using var request = new HttpRequestMessage(HttpMethod.Get, name);
+                    using HttpResponseMessage response = http.Send(request, HttpCompletionOption.ResponseContentRead, timeout.Token);
+                    response.EnsureSuccessStatusCode();
 
-                byte[] bytes = buffer.ToArray();
+                    using Stream content = response.Content.ReadAsStream(timeout.Token);
+                    using var buffer = new MemoryStream();
+                    content.CopyTo(buffer);
 
-                recent_failures.TryRemove(name, out _);
-                AppLog.Net.Add($"资源下载完成：{AppLog.SafeUrl(name)}，{bytes.Length / 1024}KB，{sw.ElapsedMilliseconds}ms");
+                    byte[] bytes = buffer.ToArray();
 
-                return bytes;
+                    recent_failures.TryRemove(name, out _);
+                    AppLog.Net.Add($"资源下载完成：{AppLog.SafeUrl(name)}，{bytes.Length / 1024}KB，{sw.ElapsedMilliseconds}ms");
+
+                    return bytes;
+                }
+                catch (Exception e)
+                {
+                    lastError = e;
+
+                    bool timedOut = e is OperationCanceledException && timeout.IsCancellationRequested;
+
+                    // 只有「没到自身超时就失败」才值得立刻重连；真正的超时（CDN 卡住）重试只会更慢。
+                    if (!timedOut && attempt < attempts)
+                    {
+                        AppLog.Net.Add($"音频流连接中断，正在重试（{attempt}/{attempts}）：{AppLog.SafeUrl(name)}：{e.Message}");
+                        Thread.Sleep(400);
+                        continue;
+                    }
+
+                    recent_failures[name] = DateTime.UtcNow;
+
+                    string kind = image ? "封面" : "资源";
+                    TimeSpan limit = image ? image_timeout : audio_timeout;
+
+                    AppLog.Net.Add($"{kind}下载{(timedOut ? "超时" : "失败")}：{AppLog.SafeUrl(name)}，"
+                                   + $"{sw.ElapsedMilliseconds}ms（上限 {limit.TotalSeconds:0}s）：{e.Message}",
+                        image ? LogLevel.Important : LogLevel.Error, e);
+
+                    throw;
+                }
             }
-            catch (Exception e)
-            {
-                recent_failures[name] = DateTime.UtcNow;
 
-                string kind = image ? "封面" : "资源";
-                TimeSpan limit = image ? image_timeout : audio_timeout;
-                bool timedOut = e is OperationCanceledException && timeout.IsCancellationRequested;
-
-                AppLog.Net.Add($"{kind}下载{(timedOut ? "超时" : "失败")}：{AppLog.SafeUrl(name)}，"
-                               + $"{sw.ElapsedMilliseconds}ms（上限 {limit.TotalSeconds:0}s）：{e.Message}",
-                    image ? LogLevel.Important : LogLevel.Error, e);
-
-                throw;
-            }
+            throw lastError ?? new HttpRequestException("下载失败");
         }
 
         private async Task<byte[]> downloadAsync(string name, CancellationToken cancellationToken)

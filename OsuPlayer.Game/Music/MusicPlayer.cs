@@ -16,6 +16,7 @@ using OsuPlayer.Game.KuGou;
 using OsuPlayer.Game.Logging;
 using OsuPlayer.Game.Music.BeatSync.Onnx;
 using OsuPlayer.Game.Net;
+using OsuPlayer.Game.NetEase;
 using osu.Framework.Logging;
 
 namespace OsuPlayer.Game.Music
@@ -43,9 +44,16 @@ namespace OsuPlayer.Game.Music
         private INotificationOverlay? notifications { get; set; }
 
         private KuGouApi api = null!;
+        private NetEaseApi netease = null!;
         private ITrackStore trackStore = null!;
         private ITrackStore localTrackStore = null!;
         public TextureStore OnlineTextures { get; private set; } = null!;
+
+        /// <summary>
+        /// 当前用于搜索 / 推荐 / 账号登录的平台。播放队列不受限制：每首歌按自己的
+        /// <see cref="SongInfo.Platform"/> 解析播放地址，因此两个平台的歌可以混排。
+        /// </summary>
+        public Bindable<MusicPlatform> ActivePlatform { get; } = new(MusicPlatform.KuGou);
 
         // Now playing state
         public Bindable<SongInfo?> CurrentSong { get; } = new();
@@ -124,6 +132,12 @@ namespace OsuPlayer.Game.Music
 
         /// <summary>最近一次歌单同步的时间，用于给强制刷新设下限。</summary>
         private DateTime likedSyncedAt;
+
+        /// <summary>网易云「我喜欢的音乐」是否已同步过；与酷狗的列表缓存完全独立。</summary>
+        private bool neteaseLikedSynced;
+
+        private Task<IReadOnlyList<SongInfo>?>? neteaseLikedInFlight;
+        private DateTime neteaseLikedSyncedAt;
 
         /// <summary>强制刷新之间的最小间隔：面板每次打开都强制拉一次，在风控下就变成一串十几秒的请求。</summary>
         private static readonly TimeSpan liked_force_min_interval = TimeSpan.FromMinutes(2);
@@ -338,6 +352,7 @@ namespace OsuPlayer.Game.Music
         {
             var httpStore = new HttpResourceStore();
             api = new KuGouApi();
+            netease = new NetEaseApi();
             trackStore = audio.GetTrackStore(httpStore);
             localTrackStore = audio.GetTrackStore(new LocalFileResourceStore());
             OnlineTextures = new TextureStore(renderer, new TextureLoaderStore(httpStore), useAtlas: false);
@@ -404,29 +419,81 @@ namespace OsuPlayer.Game.Music
             }
 
             // 已恢复登录时补领当天的概念版权益（换机器/换天启动都能自动生效）。
+            // 权益只属于酷狗账号，当前平台是网易云时不要顺带去跑酷狗的领取流程。
             if (IsLoggedIn)
             {
-                _ = claimDailyVipAsync();
+                if (ActivePlatform.Value == MusicPlatform.KuGou)
+                    _ = claimDailyVipAsync();
 
-                // 「喜欢」跟着账号走：启动时同步一次账号的「我喜欢」歌单。
+                // 「喜欢」跟着账号走：启动时同步一次当前平台账号的「我喜欢」歌单。
                 _ = RefreshLikedAsync(force: true);
             }
         }
 
-        public bool IsLoggedIn => api.Session.IsLoggedIn;
+        public bool IsLoggedIn => ActivePlatform.Value == MusicPlatform.NetEase
+            ? netease.Session.IsLoggedIn
+            : api.Session.IsLoggedIn;
 
         /// <summary>
-        /// 本机是否还留着可用的登录凭证（token）。
-        /// 「快速登录」用它判断有没有东西可换 —— 凭证被清掉（登出/换了客户端身份）时只能走扫码、验证码或密码。
+        /// 本机是否还留着当前平台的登录凭证。网易云的凭证是 Cookie，酷狗的是 token；
+        /// 两个平台互不影响，切换平台时各自读取自己的那一份。
         /// </summary>
-        public bool HasStoredCredential => !string.IsNullOrEmpty(api.Session.Token);
+        public bool HasStoredCredential => ActivePlatform.Value == MusicPlatform.NetEase
+            ? netease.Session.IsLoggedIn
+            : !string.IsNullOrEmpty(api.Session.Token);
 
         public BindableBool LoggedIn { get; } = new();
 
-        public long LoginUserId => api.Session.UserId;
+        public long LoginUserId => ActivePlatform.Value == MusicPlatform.NetEase
+            ? netease.Session.UserId
+            : api.Session.UserId;
+
+        /// <summary>
+        /// 切换当前平台。账号体系相互独立，所以这里只切换「当前操作的平台」，
+        /// 不改动任何一方的登录凭证，也不打断正在播放的音频。
+        /// </summary>
+        public void SwitchPlatform(MusicPlatform platform)
+        {
+            if (ActivePlatform.Value == platform)
+                return;
+
+            ActivePlatform.Value = platform;
+            LoggedIn.Value = IsLoggedIn;
+
+            // 推荐列表是「当前平台」的：切换后旧缓存不能再展示成新平台的推荐。
+            CachedRecommend = null;
+
+            // 「我喜欢」跟着账号走：切换后按新平台的账号重新同步一次。
+            // 同步间隔计时也要清掉，否则刚在另一平台同步过会把这次刷新挡掉。
+            likedSyncedAt = default;
+            neteaseLikedSyncedAt = default;
+
+            if (IsLoggedIn)
+                _ = RefreshLikedAsync(force: true);
+
+            AppLog.Player.Add($"切换音乐平台：{platform.DisplayName()}（{netEaseStateText()}）", LogLevel.Important);
+            queueStateSave();
+        }
+
+        private string netEaseStateText()
+        {
+            string kugou = api.Session.IsLoggedIn ? "已登录" : "未登录";
+            string neteaseState = netease.Session.IsLoggedIn ? "已登录" : "未登录";
+
+            return $"酷狗={kugou}，网易云={neteaseState}";
+        }
 
         public void Logout()
         {
+            if (ActivePlatform.Value == MusicPlatform.NetEase)
+            {
+                netease.Logout();
+                LoggedIn.Value = false;
+                neteaseLikedSynced = false;
+                saveState();
+                return;
+            }
+
             AppLog.Player.Add($"退出登录（原用户 ID：{api.Session.UserId}）", LogLevel.Important);
             api.Session.Logout();
             api.ResetPlayAuth(); // 授权串是按账号签发的，换账号必须重取
@@ -498,9 +565,16 @@ namespace OsuPlayer.Game.Music
 
         // -------- 数据获取 --------
         public Task<IReadOnlyList<SongInfo>> SearchAsync(string keyword)
-            => AppLog.Player.TimeAsync($"搜索歌曲“{keyword}”",
+        {
+            if (ActivePlatform.Value == MusicPlatform.NetEase)
+                return AppLog.Player.TimeAsync($"搜索网易云歌曲“{keyword}”",
+                    () => netease.SearchAsync(keyword),
+                    songs => $"，{songs.Count} 条结果");
+
+            return AppLog.Player.TimeAsync($"搜索歌曲“{keyword}”",
                 () => mapAsync(() => api.SearchSongsAsync(keyword, 1, 30), KuGouMapper.SearchResults),
                 songs => $"，{songs.Count} 条结果");
+        }
 
         /// <summary>记录一次成功的搜索（去重后置顶），供搜索面板展示与持久化。</summary>
         public void RecordSearch(string keyword)
@@ -536,6 +610,19 @@ namespace OsuPlayer.Game.Music
         /// </summary>
         public async Task<IReadOnlyList<SongInfo>> RefreshRecommendAsync(Action<IReadOnlyList<SongInfo>>? onBatch = null)
         {
+            // 网易云一次请求就能拿到整份推荐，不需要像酷狗那样连续拉 7 批。
+            if (ActivePlatform.Value == MusicPlatform.NetEase)
+            {
+                IReadOnlyList<SongInfo> recommended = await AppLog.Player.TimeAsync("获取网易云推荐",
+                    () => netease.GetRecommendAsync(50),
+                    r => $"，{r.Count} 首").ConfigureAwait(true);
+
+                CachedRecommend = recommended;
+                onBatch?.Invoke(recommended);
+
+                return recommended;
+            }
+
             var accumulated = new List<SongInfo>();
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             CachedRecommend = accumulated;
@@ -576,17 +663,37 @@ namespace OsuPlayer.Game.Music
         }
 
         public Task<IReadOnlyList<SongInfo>> GetPersonalFmAsync()
-            => AppLog.Player.TimeAsync("获取私人 FM",
+        {
+            if (ActivePlatform.Value == MusicPlatform.NetEase)
+                return AppLog.Player.TimeAsync("获取网易云私人 FM",
+                    () => netease.GetPersonalFmAsync(),
+                    songs => $"，{songs.Count} 首");
+
+            return AppLog.Player.TimeAsync("获取私人 FM",
                 () => mapAsync(() => api.GetPersonalFmAsync(), KuGouMapper.PersonalFm),
                 songs => $"，{songs.Count} 首");
+        }
 
         public Task<IReadOnlyList<PlaylistInfo>> GetPlaylistsAsync()
-            => AppLog.Player.TimeAsync("获取歌单广场",
+        {
+            if (ActivePlatform.Value == MusicPlatform.NetEase)
+                return AppLog.Player.TimeAsync("获取网易云歌单广场",
+                    () => netease.GetPlaylistsAsync(),
+                    lists => $"，{lists.Count} 个歌单");
+
+            return AppLog.Player.TimeAsync("获取歌单广场",
                 () => mapAsync(() => api.GetRecommendedPlaylistsAsync(0, 1, 30), KuGouMapper.Playlists),
                 lists => $"，{lists.Count} 个歌单");
+        }
 
         public Task<IReadOnlyList<SongInfo>> GetPlaylistTracksAsync(string collectionId)
-            => AppLog.Player.TimeAsync($"获取歌单歌曲（collection {collectionId}）",
+        {
+            if (ActivePlatform.Value == MusicPlatform.NetEase)
+                return AppLog.Player.TimeAsync($"获取网易云歌单歌曲（{collectionId}）",
+                    () => netease.GetPlaylistTracksAsync(collectionId),
+                    songs => $"，{songs.Count} 首");
+
+            return AppLog.Player.TimeAsync($"获取歌单歌曲（collection {collectionId}）",
                 async () =>
                 {
                     var all = new List<SongInfo>();
@@ -607,6 +714,7 @@ namespace OsuPlayer.Game.Music
                     return (IReadOnlyList<SongInfo>)all;
                 },
                 songs => $"，{songs.Count} 首");
+        }
 
         private static async Task<T> mapAsync<T>(Func<Task<JObject>> request, Func<JObject, T> map)
             => map(await request().ConfigureAwait(false));
@@ -968,7 +1076,8 @@ namespace OsuPlayer.Game.Music
 
         // -------- 播放地址缓存与预解析 --------
 
-        private static string prefetchKey(string hash, string quality) => $"{hash}|{quality}";
+        private static string prefetchKey(SongInfo song, string quality)
+            => $"{song.Platform}|{song.Hash}|{quality}";
 
         /// <summary>
         /// Returns a still-valid resolved URL for this track (and quality), if one is cached.
@@ -976,7 +1085,7 @@ namespace OsuPlayer.Game.Music
         /// </summary>
         private string? cachedUrl(SongInfo song)
         {
-            string key = prefetchKey(song.Hash, Quality.Value);
+            string key = prefetchKey(song, Quality.Value);
 
             if (!urlCache.TryGetValue(key, out var cached))
                 return null;
@@ -994,7 +1103,7 @@ namespace OsuPlayer.Game.Music
             if (song.IsLocal)
                 return;
 
-            if (urlCache.TryRemove(prefetchKey(song.Hash, Quality.Value), out _))
+            if (urlCache.TryRemove(prefetchKey(song, Quality.Value), out _))
                 AppLog.Player.Add($"丢弃失效的缓存地址：{describe(song)}");
         }
 
@@ -1005,10 +1114,17 @@ namespace OsuPlayer.Game.Music
         /// </summary>
         private Task prefetchUrlAsync(SongInfo song, string quality)
         {
-            if (song.IsLocal || verificationRequired is not null)
+            if (song.IsLocal)
                 return Task.CompletedTask;
 
-            string key = prefetchKey(song.Hash, quality);
+            // 网易云与酷狗是两条完全不同的接口链路：地址解析也要按曲目所属平台分流。
+            if (song.Platform == MusicPlatform.NetEase)
+                return prefetchNetEaseUrlAsync(song, quality);
+
+            if (verificationRequired is not null)
+                return Task.CompletedTask;
+
+            string key = prefetchKey(song, quality);
 
             if (urlCache.ContainsKey(key) || !prefetching.TryAdd(key, 0))
                 return Task.CompletedTask;
@@ -1038,6 +1154,44 @@ namespace OsuPlayer.Game.Music
                 catch (Exception e)
                 {
                     AppLog.Player.Debug($"预解析地址失败：{describe(song)}：{e.Message}");
+                }
+                finally
+                {
+                    prefetching.TryRemove(key, out _);
+                }
+            });
+        }
+
+        /// <summary>网易云曲目的后台预解析。试听片段（freeTrialInfo）不写缓存，下次仍走接口确认。</summary>
+        private Task prefetchNetEaseUrlAsync(SongInfo song, string quality)
+        {
+            string key = prefetchKey(song, quality);
+
+            if (urlCache.ContainsKey(key) || !prefetching.TryAdd(key, 0))
+                return Task.CompletedTask;
+
+            return Task.Run(async () =>
+            {
+                try
+                {
+                    NetEasePlayUrl result = await netease.GetPlayUrlAsync(song, quality).ConfigureAwait(false);
+
+                    if (!string.IsNullOrEmpty(result.Url))
+                    {
+                        if (!result.Preview)
+                            urlCache[key] = (result.Url, DateTime.UtcNow + url_lifetime);
+
+                        AppLog.Player.Debug($"已预解析网易云地址：{describe(song)}");
+                        queueStateSave();
+                    }
+                    else
+                    {
+                        AppLog.Player.Debug($"网易云预解析未取到地址（{result.Message}）：{describe(song)}");
+                    }
+                }
+                catch (Exception e)
+                {
+                    AppLog.Player.Debug($"网易云预解析失败：{describe(song)}：{e.Message}");
                 }
                 finally
                 {
@@ -1120,6 +1274,8 @@ namespace OsuPlayer.Game.Music
                     ["showFps"] = ShowFps.Value,
                     ["fullscreenEffects"] = FullscreenEffects.Value,
                     ["coverRotation"] = CoverRotation.Value.ToString(),
+                    // 当前平台：搜索 / 推荐 / 账号面板下次启动继续停在同一个平台。
+                    ["activePlatform"] = ActivePlatform.Value.ToString(),
                     ["liked"] = new JArray(Liked.Select(toJson)),
                     ["history"] = new JArray(History.Select(toJson)),
                     ["local"] = new JArray(LocalTracks.Select(toJson)),
@@ -1158,6 +1314,16 @@ namespace OsuPlayer.Game.Music
                         ["guid"] = api.Session.Device.Guid,
                         ["dev"] = api.Session.Device.Dev,
                     },
+                    // 网易云登录态：独立的 Cookie 串（MUSIC_U 为登录凭证），与上面的酷狗 session 互不影响。
+                    ["netease"] = netease.Session.IsLoggedIn
+                        ? new JObject
+                        {
+                            ["cookie"] = netease.Session.CookieHeader,
+                            ["userId"] = netease.Session.UserId,
+                            ["nickname"] = netease.Session.Nickname,
+                            ["avatar"] = netease.Session.AvatarUrl,
+                        }
+                        : null,
                 };
 
                 // 原子写入：先写同目录临时文件，Dispose 时才替换 player-state.json，
@@ -1246,7 +1412,25 @@ namespace OsuPlayer.Game.Music
                         api.Session.Device.Dev = dev;
                 }
 
-                bool restoredLogin = restoreSession(state["session"] as JObject);
+                // 网易云登录态先恢复：账号体系独立，Cookie 与酷狗 token 互不覆盖。
+                if (state["netease"] is JObject neteaseState)
+                {
+                    netease.Session.Restore(
+                        neteaseState["cookie"]?.ToString(),
+                        neteaseState["userId"]?.Value<long>() ?? 0,
+                        neteaseState["nickname"]?.ToString(),
+                        neteaseState["avatar"]?.ToString());
+                }
+
+                // 当前平台要在酷狗凭证校验之前恢复：凭证校验/会员探测只属于酷狗。
+                ActivePlatform.Value = Enum.TryParse(state["activePlatform"]?.ToString(), out MusicPlatform savedPlatform)
+                    ? savedPlatform
+                    : MusicPlatform.KuGou;
+
+                _ = restoreSession(state["session"] as JObject) || netease.Session.IsLoggedIn;
+
+                // LoggedIn 是「当前平台」的登录状态；酷狗恢复成功但当前平台是网易云时不能显示为已登录。
+                LoggedIn.Value = IsLoggedIn;
 
                 if (state["timings"] is JObject timings)
                 {
@@ -1286,8 +1470,8 @@ namespace OsuPlayer.Game.Music
                         urlCache[key] = (url, expiresAt);
                 }
 
-                AppLog.Player.Add($"已恢复播放状态：音量 {Volume.Value:0.##}，音质 {Quality.Value}，倍速 {Tempo.Value:0.##}x，变调 {(PitchShift.Value ? "开" : "关")}，循环 {Repeat.Value}，喜欢 {Liked.Count} 首，历史 {History.Count} 首，本地 {LocalTracks.Count} 首，手改 timing {timingOverrides.Count} 首，缓存地址 {urlCache.Count} 首"
-                                  + (restoredLogin ? $"，已恢复登录（用户 ID {LoginUserId}）" : string.Empty), LogLevel.Important);
+                AppLog.Player.Add($"已恢复播放状态：音量 {Volume.Value:0.##}，音质 {Quality.Value}，倍速 {Tempo.Value:0.##}x，变调 {(PitchShift.Value ? "开" : "关")}，循环 {Repeat.Value}，平台 {ActivePlatform.Value.DisplayName()}，喜欢 {Liked.Count} 首，历史 {History.Count} 首，本地 {LocalTracks.Count} 首，手改 timing {timingOverrides.Count} 首，缓存地址 {urlCache.Count} 首"
+                                  + (IsLoggedIn ? $"，已恢复登录（用户 ID {LoginUserId}）" : string.Empty), LogLevel.Important);
             }
             catch (FileNotFoundException)
             {
@@ -1309,6 +1493,7 @@ namespace OsuPlayer.Game.Music
             ["audioId"] = song.AlbumAudioId,
             ["cover"] = song.CoverUrl,
             ["localPath"] = song.LocalPath,
+            ["platform"] = song.Platform.ToString(),
             ["timing"] = song.Timing is { } timing ? timingToJson(timing) : null,
         };
 
@@ -1332,6 +1517,7 @@ namespace OsuPlayer.Game.Music
             stored["localPath"]?.ToString())
         {
             Timing = timingFromJson(stored["timing"]),
+            Platform = Enum.TryParse(stored["platform"]?.ToString(), out MusicPlatform platform) ? platform : MusicPlatform.KuGou,
         };
 
         private static BeatmapTiming? timingFromJson(JToken? stored)
@@ -1390,10 +1576,12 @@ namespace OsuPlayer.Game.Music
             loginInvalidated = false;
 
             // 恢复登录后确认凭证是否仍然有效（酷狗 token 会过期），失效时在日志里留痕。
-            _ = probeAccountAsync();
-
-            // 恢复登录后同样确认一次概念版会员状态（也在日志里留痕）。
-            _ = fetchConceptVipAsync();
+            // 这两个探测都属于酷狗账号，当前平台是网易云时不要跑。
+            if (ActivePlatform.Value == MusicPlatform.KuGou)
+            {
+                _ = probeAccountAsync();
+                _ = fetchConceptVipAsync();
+            }
 
             return true;
         }
@@ -1539,6 +1727,10 @@ namespace OsuPlayer.Game.Music
         public async Task<IReadOnlyList<SongInfo>?> RefreshLikedAsync(bool force = false,
             Action<IReadOnlyList<SongInfo>>? onUpdated = null)
         {
+            // 两个平台各有一套账号收藏：当前是网易云时读网易云的「我喜欢的音乐」。
+            if (ActivePlatform.Value == MusicPlatform.NetEase)
+                return await refreshNetEaseLikedAsync(force, onUpdated).ConfigureAwait(true);
+
             if (!api.Session.IsLoggedIn)
             {
                 likedListId = 0;
@@ -1603,12 +1795,19 @@ namespace OsuPlayer.Game.Music
 
                 Schedule(() =>
                 {
+                    // 网易云等其它平台的本地收藏不属于酷狗账号歌单，同步时保留，避免切换平台后丢收藏。
+                    List<SongInfo> otherPlatform = Liked.Where(s => s.Platform != MusicPlatform.KuGou).ToList();
+                    List<SongInfo> merged = songs
+                                            .Concat(otherPlatform.Where(local => songs.All(s => s.Platform != local.Platform
+                                                                                             || !string.Equals(s.Hash, local.Hash, StringComparison.OrdinalIgnoreCase))))
+                                            .ToList();
+
                     Liked.Clear();
 
-                    foreach (SongInfo song in songs)
+                    foreach (SongInfo song in merged)
                         Liked.Add(song);
 
-                    onUpdated?.Invoke(songs);
+                    onUpdated?.Invoke(merged);
                 });
 
                 return songs;
@@ -1616,6 +1815,76 @@ namespace OsuPlayer.Game.Music
             catch (Exception e)
             {
                 AppLog.Player.Add($"同步账号「我喜欢」失败：{e.Message}", LogLevel.Error, e);
+                return null;
+            }
+        }
+
+        /// <summary>网易云账号收藏的同步入口，节流 / 合并并发请求的逻辑与酷狗一致。</summary>
+        private async Task<IReadOnlyList<SongInfo>?> refreshNetEaseLikedAsync(bool force,
+            Action<IReadOnlyList<SongInfo>>? onUpdated)
+        {
+            if (!netease.Session.IsLoggedIn)
+            {
+                neteaseLikedSynced = false;
+                return null;
+            }
+
+            if (neteaseLikedSynced && !force)
+                return Liked.ToList();
+
+            if (neteaseLikedInFlight is { } running)
+                return await running.ConfigureAwait(true);
+
+            if (force && DateTime.UtcNow - neteaseLikedSyncedAt < liked_force_min_interval)
+                return neteaseLikedSynced ? Liked.ToList() : null;
+
+            Task<IReadOnlyList<SongInfo>?> sync = syncNetEaseLikedAsync(onUpdated);
+            neteaseLikedInFlight = sync;
+
+            try
+            {
+                return await sync.ConfigureAwait(true);
+            }
+            finally
+            {
+                neteaseLikedInFlight = null;
+                neteaseLikedSyncedAt = DateTime.UtcNow;
+            }
+        }
+
+        private async Task<IReadOnlyList<SongInfo>?> syncNetEaseLikedAsync(Action<IReadOnlyList<SongInfo>>? onUpdated)
+        {
+            try
+            {
+                IReadOnlyList<SongInfo> songs = await AppLog.Player.TimeAsync("同步网易云「我喜欢的音乐」",
+                    () => netease.GetLikedSongsAsync(), r => $"，{r.Count} 首").ConfigureAwait(false);
+
+                neteaseLikedSynced = true;
+
+                AppLog.Player.Add($"网易云「我喜欢的音乐」共 {songs.Count} 首", LogLevel.Important);
+
+                Schedule(() =>
+                {
+                    // 酷狗账号歌单属于另一套账号数据，同步网易云时保留（反之亦然）。
+                    List<SongInfo> otherPlatform = Liked.Where(s => s.Platform != MusicPlatform.NetEase).ToList();
+
+                    List<SongInfo> merged = songs
+                                            .Concat(otherPlatform.Where(local => songs.All(s => !string.Equals(s.Hash, local.Hash, StringComparison.OrdinalIgnoreCase))))
+                                            .ToList();
+
+                    Liked.Clear();
+
+                    foreach (SongInfo song in merged)
+                        Liked.Add(song);
+
+                    onUpdated?.Invoke(merged);
+                });
+
+                return songs;
+            }
+            catch (Exception e)
+            {
+                AppLog.Player.Add($"同步网易云「我喜欢的音乐」失败：{e.Message}", LogLevel.Error, e);
                 return null;
             }
         }
@@ -1645,11 +1914,12 @@ namespace OsuPlayer.Game.Music
         /// <summary>收藏状态（登录后即账号歌单里的状态）。</summary>
         public bool IsLiked(SongInfo song) => findLiked(song) is not null;
 
-        /// <summary>按 hash 匹配（来自不同接口的同一首歌，专辑/文件 id 可能不同，不能用整条 record 比较）。</summary>
+        /// <summary>按平台 + hash 匹配（来自不同接口的同一首歌，专辑/文件 id 可能不同，不能用整条 record 比较）。</summary>
         private SongInfo? findLiked(SongInfo song)
             => song.Hash.Length == 0
                 ? null
-                : Liked.FirstOrDefault(s => string.Equals(s.Hash, song.Hash, StringComparison.OrdinalIgnoreCase));
+                : Liked.FirstOrDefault(s => s.Platform == song.Platform
+                                            && string.Equals(s.Hash, song.Hash, StringComparison.OrdinalIgnoreCase));
 
         public async Task ToggleLikeAsync()
         {
@@ -1661,8 +1931,17 @@ namespace OsuPlayer.Game.Music
                 return;
             }
 
-            // 未登录或本地导入的曲目没有酷狗 hash：只能记在本地。
-            if (!api.Session.IsLoggedIn || song.IsLocal || song.Hash.Length == 0)
+            // 当前平台是网易云时，写入网易云账号的「我喜欢的音乐」。
+            if (ActivePlatform.Value == MusicPlatform.NetEase)
+            {
+                await toggleNetEaseLikeAsync(song).ConfigureAwait(true);
+                return;
+            }
+
+            // 未登录、本地导入的曲目、或曲目属于网易云时，没有可写入的酷狗账号歌单：只记在本地。
+            if (ActivePlatform.Value != MusicPlatform.KuGou
+                || song.Platform != MusicPlatform.KuGou
+                || !api.Session.IsLoggedIn || song.IsLocal || song.Hash.Length == 0)
             {
                 toggleLocalLike(song);
                 return;
@@ -1736,6 +2015,46 @@ namespace OsuPlayer.Game.Music
 
         /// <summary>删歌用 fileid；接口没给时回落到 album_audio_id（参考实现同样回落到 mixSongId）。</summary>
         private static long fileIdOf(SongInfo song) => song.FileId != 0 ? song.FileId : song.AlbumAudioId;
+
+        /// <summary>网易云账号收藏：可写时同步到账号，否则（未登录 / 本地曲目 / 跨平台曲目）只记本地。</summary>
+        private async Task toggleNetEaseLikeAsync(SongInfo song)
+        {
+            if (song.Platform != MusicPlatform.NetEase
+                || !netease.Session.IsLoggedIn || song.IsLocal || song.Hash.Length == 0)
+            {
+                toggleLocalLike(song);
+                return;
+            }
+
+            bool liked = findLiked(song) is not null;
+
+            try
+            {
+                await AppLog.Player.TimeAsync(liked ? "网易云取消收藏" : "网易云收藏",
+                    () => netease.SetSongLikedAsync(song.Hash, !liked)).ConfigureAwait(true);
+
+                Schedule(() =>
+                {
+                    SongInfo? existing = findLiked(song);
+
+                    if (liked)
+                    {
+                        if (existing is not null)
+                            Liked.Remove(existing);
+                    }
+                    else if (existing is null)
+                    {
+                        Liked.Insert(0, song);
+                    }
+                });
+
+                AppLog.Player.Add($"{(liked ? "取消喜欢" : "添加喜欢")}（网易云账号）：{describe(song)}", LogLevel.Important);
+            }
+            catch (Exception e)
+            {
+                AppLog.Player.Add($"网易云收藏操作失败：{e.Message}", LogLevel.Error, e);
+            }
+        }
 
         /// <summary>未登录（或本地曲目）时的纯本地收藏。</summary>
         private void toggleLocalLike(SongInfo song)
@@ -2156,6 +2475,10 @@ namespace OsuPlayer.Game.Music
             // 甚至播放态 —— 也就是"播放一首歌却继承了上一首的部分条目"。所有共享写入前都要过这个判断。
             bool stale() => serial != playSerial;
 
+            // 网易云曲目走自己的接口链路（没有酷狗的备用音源 / 免费听授权 / 风控概念）。
+            if (song.Platform == MusicPlatform.NetEase)
+                return await resolveNetEaseUrlAsync(song, serial).ConfigureAwait(false);
+
             JObject response;
             string? prefetched = cachedUrl(song);
 
@@ -2311,11 +2634,84 @@ namespace OsuPlayer.Game.Music
             // 命中缓存时用同样的逻辑顺延有效期，让反复播放的歌一直免解析。
             if (!preview)
             {
-                urlCache[prefetchKey(song.Hash, Quality.Value)] = (resolvedUrl, DateTime.UtcNow + url_lifetime);
+                urlCache[prefetchKey(song, Quality.Value)] = (resolvedUrl, DateTime.UtcNow + url_lifetime);
                 queueStateSave();
             }
 
             return (resolvedUrl, preview);
+        }
+
+        /// <summary>
+        /// 网易云曲目的播放地址解析。免费曲目匿名可取；会员曲目未登录/无会员权益时接口返回空地址，
+        /// 这里把接口给的原因直接展示给用户（不再提示去开酷狗会员）。
+        /// </summary>
+        private async Task<(string Url, bool Preview)?> resolveNetEaseUrlAsync(SongInfo song, long serial)
+        {
+            bool stale() => serial != playSerial;
+
+            string? cached = cachedUrl(song);
+
+            if (cached is not null)
+            {
+                AppLog.Player.Add($"命中缓存地址，跳过解析：{describe(song)}", LogLevel.Important);
+
+                if (!stale() && !string.IsNullOrEmpty(song.CoverUrl))
+                    CurrentCover.Value = song.CoverUrl;
+
+                return (cached, false);
+            }
+
+            NetEasePlayUrl result;
+
+            try
+            {
+                result = await AppLog.Player.TimeAsync($"解析网易云播放地址 {describe(song)}",
+                    () => netease.GetPlayUrlAsync(song, Quality.Value),
+                    r => $"，{(r.Preview ? "试听片段" : "完整曲目")}，{(string.IsNullOrEmpty(r.Url) ? "无地址" : "有地址")}").ConfigureAwait(false);
+            }
+            catch (Exception e)
+            {
+                AppLog.Player.Add($"网易云播放地址获取失败：{describe(song)}：{e.Message}", LogLevel.Error, e);
+
+                if (!stale())
+                {
+                    StatusText.Value = $"播放地址获取失败：{e.Message}";
+                    IsPlaying.Value = false;
+                    PlayGeneration.Value++;
+                    endHandled = true;
+                }
+
+                return null;
+            }
+
+            if (stale())
+                return null;
+
+            if (string.IsNullOrEmpty(result.Url))
+            {
+                AppLog.Player.Add($"网易云无可播放地址（{result.Message}）：{describe(song)}", LogLevel.Important);
+                StatusText.Value = result.Message;
+                IsPlaying.Value = false;
+                PlayGeneration.Value++;
+                endHandled = true;
+                return null;
+            }
+
+            if (!string.IsNullOrEmpty(song.CoverUrl))
+                CurrentCover.Value = song.CoverUrl;
+
+            if (result.Preview)
+            {
+                AppLog.Player.Add($"网易云试听：{describe(song)}（会员曲目片段）", LogLevel.Important);
+                StatusText.Value = "当前为试听片段，登录有会员权益的网易云账号可播放完整版本";
+            }
+            else
+            {
+                urlCache[prefetchKey(song, Quality.Value)] = (result.Url, DateTime.UtcNow + url_lifetime);
+                queueStateSave();
+            }
+
+            return (result.Url, result.Preview);
         }
 
         /// <summary>
@@ -2700,6 +3096,14 @@ namespace OsuPlayer.Game.Music
         public async Task<(int Total, List<SongComment> Items)> FetchCommentsAsync(SongInfo song, int page,
             int pageSize = 20)
         {
+            if (song.Platform == MusicPlatform.NetEase)
+            {
+                (int neteaseTotal, IReadOnlyList<SongComment> neteaseItems) =
+                    await netease.GetCommentsAsync(song.Hash, page, pageSize).ConfigureAwait(false);
+
+                return (neteaseTotal, neteaseItems.ToList());
+            }
+
             JObject response = await api.GetSongCommentsAsync(song.Hash, song.AlbumAudioId, song.Name, page, pageSize)
                 .ConfigureAwait(false);
 
@@ -2811,6 +3215,12 @@ namespace OsuPlayer.Game.Music
                 item["pcontent"]?.ToString());
         }
 
+        /// <summary>按曲目所属平台取歌词原文（两个平台的歌词接口与参数都不同）。</summary>
+        private Task<string?> getLyricTextAsync(SongInfo song)
+            => song.Platform == MusicPlatform.NetEase
+                ? netease.GetLyricTextAsync(song.Hash)
+                : api.GetLyricTextAsync(song.Hash, song.DurationMs);
+
         private async Task loadLyricsAsync(SongInfo song)
         {
             try
@@ -2818,7 +3228,7 @@ namespace OsuPlayer.Game.Music
                 // 手动套用过的歌词优先，其次才按曲目自身的 hash 找。
                 string? text = lyricOverrides.TryGetValue(song.Hash, out string? applied)
                     ? applied
-                    : await api.GetLyricTextAsync(song.Hash, song.DurationMs).ConfigureAwait(false);
+                    : await getLyricTextAsync(song).ConfigureAwait(false);
                 if (CurrentSong.Value != song)
                 {
                     AppLog.Player.Debug($"歌词到达但已切歌，丢弃：{describe(song)}");
@@ -2859,7 +3269,7 @@ namespace OsuPlayer.Game.Music
 
             try
             {
-                string? text = await api.GetLyricTextAsync(source.Hash, source.DurationMs).ConfigureAwait(false);
+                string? text = await getLyricTextAsync(source).ConfigureAwait(false);
 
                 if (string.IsNullOrEmpty(text))
                     return $"《{source.Name}》没有可用歌词";
@@ -3064,6 +3474,12 @@ namespace OsuPlayer.Game.Music
         // -------- 扫码登录 --------
         public async Task<(string Key, string QrImageDataUri)> CreateQrAsync()
         {
+            if (ActivePlatform.Value == MusicPlatform.NetEase)
+            {
+                (string neteaseKey, string neteaseImage) = await netease.CreateQrAsync().ConfigureAwait(false);
+                return (neteaseKey, neteaseImage);
+            }
+
             JObject response = await AppLog.Player.TimeAsync("创建登录二维码",
                 () => api.CreateQrKeyAsync(),
                 r =>
@@ -3079,6 +3495,18 @@ namespace OsuPlayer.Game.Music
         /// <summary>Returns the QR login inner status: 0 expired, 1 waiting, 2 scanned, 4 authorized.</summary>
         public async Task<int> PollQrAsync(string key)
         {
+            if (ActivePlatform.Value == MusicPlatform.NetEase)
+            {
+                NetEaseQrResult result = await netease.PollQrAsync(key).ConfigureAwait(false);
+
+                AppLog.Player.Add($"网易云二维码登录状态轮询 → {result.Status}（{result.Message}）");
+
+                if (result.Status == 4)
+                    completeLogin("网易云扫码登录");
+
+                return result.Status;
+            }
+
             JObject response = await api.CheckQrAsync(key).ConfigureAwait(false);
             int status = response["data"]?["status"]?.Value<int>() ?? 0;
 
@@ -3181,8 +3609,16 @@ namespace OsuPlayer.Game.Music
             LoggedIn.Value = true;
             loginInvalidated = false;
             AppLog.Player.Add($"{what}成功，用户 ID：{LoginUserId}", LogLevel.Important);
-            refreshMemberState();
-            _ = RefreshLikedAsync(force: true); // 登录后「喜欢」改为读账号歌单
+
+            // 会员领取只属于酷狗账号；「我喜欢」则两个平台各自读自己账号的歌单。
+            if (ActivePlatform.Value == MusicPlatform.KuGou)
+                refreshMemberState();
+
+            neteaseLikedSyncedAt = default;
+
+            // 登录后「喜欢」改为读账号歌单（网易云登录时走网易云分支）。
+            _ = RefreshLikedAsync(force: true);
+
             saveState();                        // 登录凭证立即落盘，重启后仍然保持登录
         }
 
@@ -3383,6 +3819,18 @@ namespace OsuPlayer.Game.Music
         /// </summary>
         public async Task<AccountProfile?> GetProfileAsync()
         {
+            // 网易云：账号资料来自 nuser/account/get，字段与酷狗完全不同，单独映射。
+            if (ActivePlatform.Value == MusicPlatform.NetEase)
+            {
+                NetEaseProfile? neteaseProfile = await netease.GetProfileAsync().ConfigureAwait(false);
+
+                if (neteaseProfile is null)
+                    return null;
+
+                return new AccountProfile(neteaseProfile.Nickname, neteaseProfile.AvatarUrl, neteaseProfile.UserId,
+                    neteaseProfile.Gender, neteaseProfile.Birthday, neteaseProfile.MusicAge);
+            }
+
             if (!api.Session.IsLoggedIn)
                 return null;
 
@@ -3480,6 +3928,10 @@ namespace OsuPlayer.Game.Music
         /// </summary>
         public async Task<AccountVip> GetVipExpiriesAsync()
         {
+            // 网易云会员状态以官方 App 为准，本播放器不展示/领取其会员权益。
+            if (ActivePlatform.Value == MusicPlatform.NetEase)
+                return new AccountVip(new[] { new VipMembership("网易云会员", "请在网易云音乐 App 内查看") });
+
             if (!api.Session.IsLoggedIn)
                 return message("未登录");
 
@@ -3776,6 +4228,7 @@ namespace OsuPlayer.Game.Music
             currentTrack?.Dispose();
             retireFadingTrack();
             OnlineTextures?.Dispose();
+            netease?.Dispose();
         }
     }
 }
